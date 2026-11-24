@@ -37,7 +37,8 @@ Dependency Injection, declarative transactions and structured logging for Unity,
 - Keyed strategies through `StrategyRegistry<TKey, TStrategy>`.
 - Declarative transactions with `[Transactional]` and `ITransactionManager`.
 - Spring Data-style repositories for saves: declare a `[Repository]` interface,
-  get query methods by name, mappers, validators and migrations.
+  get query methods by name, mappers, validators and migrations, over a file
+  store that writes in the background with crash-safe transactions.
 - Optional module-boundary policy (`*.Api` assemblies only).
 - `GameLog` facade with per-source levels, lazy messages, exception entries and
   pluggable sinks.

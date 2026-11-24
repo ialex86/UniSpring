@@ -15,6 +15,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
   `IDocumentValidator<T>`, numbered `IMigration`s with a separate migration
   record, the `IDocumentStore` port, `InMemoryDocumentStore` and `DocumentData`
   for tests. Repositories need Mono.
+- `FileDocumentStore`: documents in files, written on a background thread,
+  with atomic replaces, backups and checksums, journaled transactions with
+  crash recovery, ordered retries on a refusing disk and synchronous writes
+  after `Close`. `FileDocumentStore.Install` registers it in a container.
 - `IContractProvider`: a DI extension point for beans made on demand.
 
 ## [0.1.0] - 2026-11-24

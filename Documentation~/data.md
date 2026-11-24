@@ -7,7 +7,8 @@ the checks and the migrations are separate beans.
 
 **Status:** repository interfaces are implemented by run-time proxies, so they
 work on the Mono scripting backend only (see [IL2CPP](il2cpp.md)). The package
-ships an in-memory store; a file store with background writes is planned.
+ships a file store that writes on its own thread and an in-memory store for
+tests.
 
 ## The pieces
 
@@ -150,14 +151,10 @@ internal sealed class JsonDocumentSerializer : IDocumentSerializer
 
 public static class DataSetup
 {
+    // Saves under Application.persistentDataPath/Saves, written on a background thread.
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void Configure()
-        => RuntimeContext.Configure(context =>
-        {
-            var store = new InMemoryDocumentStore();
-            context.RegisterInstance<IDocumentStore>(store);
-            context.RegisterInstance<UniSpring.Transactions.ITransactionManager>(store);
-        });
+        => RuntimeContext.Configure(context => FileDocumentStore.Install(context));
 }
 ```
 
@@ -321,9 +318,48 @@ a name; the container refuses it. `Documents` and `UniSpring` are reserved.
   writes in a transaction are read by its own flow at once and by everyone else
   after the outermost commit; a rollback drops them.
 
-`InMemoryDocumentStore` implements both and is the reference for the contract.
 Validation, mapping and serialization run on the caller's thread; only the
 bytes reach the store.
+
+### FileDocumentStore
+
+The store for the game. `FileDocumentStore.Install(context, root)` opens it,
+registers it as the container's `IDocumentStore` and `ITransactionManager`, and
+closes it when the application quits (in the editor, when Play stops). The
+default root is `Application.persistentDataPath/Saves`.
+
+- **No freezes.** A write or delete returns at once and is readable at once;
+  the store's own thread puts the waiting changes on disk shortly after, all of
+  them as one step. Repeated writes of a document collapse into the last one.
+- **Atomic files.** A write goes to a temporary file and then replaces the
+  document; the previous copy stays as a `.bak`, and every copy carries a
+  SHA-256. A read that finds a document damaged returns the backup.
+- **Transactions.** The documents of one transaction land together: their new
+  contents are written first, then a journal (the commit point), then they are
+  put in place. A journal a crash left behind is completed the next time the
+  store opens; an incomplete one is dropped.
+- **Order.** Changes land in the order they were made, so the disk always holds
+  a state the game was in. When the disk refuses (full, file held by another
+  program), the changes stay readable and are tried again with a growing pause;
+  nothing later lands before them.
+- **Quitting.** `Close(timeout)` waits for the waiting changes and stops the
+  thread; after it, writes go to disk on the caller's thread before they return,
+  so saves made while objects are destroyed are not lost. Changes the disk
+  still refuses are logged.
+- `WaitForDisk(timeout)` and `IsIdle` tell whether the changes made so far are
+  on disk, for tests and tools.
+
+Files: `<root>/<area>/<hex of the name>.doc`, with `.bak` next to it and
+journals in `<root>/.journal`. Areas are segments of letters, digits, `-` and
+`_` joined by `/`; names are any text of at most 100 UTF-8 bytes.
+
+Transactions of different flows do not merge: when two flows write the same
+document, the later commit wins.
+
+### InMemoryDocumentStore
+
+Keeps everything in memory with the same transaction rules; for unit tests and
+tools.
 
 ## Testing
 
