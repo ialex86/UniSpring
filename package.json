@@ -1,8 +1,8 @@
 {
     "name": "com.ialex86.unispring",
-    "version": "0.3.1",
+    "version": "0.4.0",
     "displayName": "UniSpring",
-    "description": "Dependency Injection, lifecycle, events, ticks, declarative transactions, Spring Data-style repositories for saves and structured logging for Unity, inspired by the Spring Framework.",
+    "description": "Dependency Injection, lifecycle, events, ticks, declarative transactions, Spring Data-style repositories for saves and structured logging for Unity, inspired by the Spring Framework. Mono and IL2CPP (editor-generated proxies).",
     "unity": "6000.0",
     "unityRelease": "0f1",
     "license": "Apache-2.0",
