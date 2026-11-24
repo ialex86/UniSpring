@@ -64,7 +64,7 @@ Add the package to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.ialex86.unispring": "https://github.com/ialex86/UniSpring.git#v0.2.0"
+    "com.ialex86.unispring": "https://github.com/ialex86/UniSpring.git#v0.3.0"
   }
 }
 ```
