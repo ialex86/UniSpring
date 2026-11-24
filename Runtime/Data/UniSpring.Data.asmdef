@@ -1,0 +1,18 @@
+{
+    "name": "UniSpring.Data",
+    "rootNamespace": "UniSpring.Data",
+    "references": [
+        "UniSpring.DependencyInjection",
+        "UniSpring.Transactions",
+        "UniSpring.Logging"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

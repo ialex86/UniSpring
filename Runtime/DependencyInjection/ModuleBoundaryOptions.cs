@@ -44,6 +44,7 @@ namespace UniSpring.DependencyInjection
         {
             "UniSpring.DependencyInjection",
             "UniSpring.Transactions",
+            "UniSpring.Data",
             "UniSpring.Logging"
         };
     }

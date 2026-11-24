@@ -4,6 +4,19 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `UniSpring.Data`: Spring Data-style repositories for game saves. `[Repository]`
+  interfaces deriving from `IRepository<T>` or `IDocument<T>` are implemented by
+  the container, with query methods by name (`FindBy`, `CountBy`, `ExistsBy`,
+  `DeleteBy`). Pluggable `IDocumentSerializer`, `IRecordMapper<TDomain, TRecord>`,
+  `IDocumentValidator<T>`, numbered `IMigration`s with a separate migration
+  record, the `IDocumentStore` port, `InMemoryDocumentStore` and `DocumentData`
+  for tests. Repositories need Mono.
+- `IContractProvider`: a DI extension point for beans made on demand.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added

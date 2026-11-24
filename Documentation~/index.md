@@ -6,6 +6,7 @@ Framework.
 
 - [Dependency injection](dependency-injection.md)
 - [Transactions](transactions.md)
+- [Data](data.md): repositories, mappers, validators and migrations for saves
 - [Worked example: a minimal transaction store](transaction-store-example.md)
 - [Logging](logging.md)
 - [Configuration](configuration.md)
@@ -29,6 +30,7 @@ Add the package to `Packages/manifest.json`:
 | --- | --- |
 | `UniSpring.DependencyInjection` | Container, attributes, scopes, strategies, Unity composition |
 | `UniSpring.Transactions` | `[Transactional]` advice and the `ITransactionManager` port |
+| `UniSpring.Data` | Repositories, mappers, validators, migrations and the document store port |
 | `UniSpring.Logging` | `GameLog` facade, configuration, Unity sink |
 | `UniSpring.Logging.Editor` | Editor bootstrap for edit-mode tools |
 

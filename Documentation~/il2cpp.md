@@ -14,6 +14,7 @@ your own build.
 | --- | --- |
 | `[Transactional]` | Replace it with `ITransactionManager.Run` / `RunAsync` |
 | Your own `IMethodInterceptor` advice | Do not rely on it; call the logic explicitly |
+| `[Repository]` interfaces (`UniSpring.Data`) | Not available yet: they are run-time proxies. A source generator is planned |
 | Code stripping | `link.xml` is generated; verify stripping and AOT behavior in a player build |
 | `logging.properties` on Android / WebGL | Ship it as a `Resources` text asset |
 | Everything else (DI, scopes, strategies, logging) | No additional configuration currently expected; IL2CPP compatibility is unverified |

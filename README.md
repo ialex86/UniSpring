@@ -36,6 +36,8 @@ Dependency Injection, declarative transactions and structured logging for Unity,
 - `AutowiredMonoBehaviour` for Unity components with `[Autowired]` members.
 - Keyed strategies through `StrategyRegistry<TKey, TStrategy>`.
 - Declarative transactions with `[Transactional]` and `ITransactionManager`.
+- Spring Data-style repositories for saves: declare a `[Repository]` interface,
+  get query methods by name, mappers, validators and migrations.
 - Optional module-boundary policy (`*.Api` assemblies only).
 - `GameLog` facade with per-source levels, lazy messages, exception entries and
   pluggable sinks.
@@ -363,6 +365,7 @@ These are conceptual counterparts, not a promise of identical Spring semantics.
 | --- | --- |
 | [Dependency injection](Documentation~/dependency-injection.md) | Discover beans, inject collections, manage lifetimes, use strategies or configure module boundaries |
 | [Transactions](Documentation~/transactions.md) | Understand commit/rollback and implement a transaction manager |
+| [Data](Documentation~/data.md) | Store saves through repository interfaces, mappers, validators and migrations |
 | [Logging](Documentation~/logging.md) | Configure levels, paths, sources, sinks and routing |
 | [IL2CPP](Documentation~/il2cpp.md) | Prepare and verify an AOT player build |
 | [AGENTS.md](AGENTS.md) | Apply the architecture conventions in AI-assisted development |

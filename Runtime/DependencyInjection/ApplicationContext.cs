@@ -63,6 +63,11 @@ namespace UniSpring.DependencyInjection
         /// <summary>Root only: set when warm-up begins (see <see cref="AdviseRegistered"/>).</summary>
         private bool m_WarmUpStarted;
 
+        /// <summary>Root only: beans made by <see cref="IContractProvider"/>s, by contract.</summary>
+        private readonly Dictionary<Type, object> m_Provided = new Dictionary<Type, object>();
+        private IContractProvider[] m_Providers;
+        private bool m_CollectingProviders;
+
         private ApplicationContext(
             BeanDefinitionIndex index,
             BeanLifetime lifetime,
@@ -343,6 +348,10 @@ namespace UniSpring.DependencyInjection
             if (candidates.Count == 0 && TryGetAssignableRegisteredInstance(contract, out registered))
                 return AdviseRegistered(registered, contract);
 
+            object provided;
+            if (candidates.Count == 0 && RootContext().TryProvide(contract, out provided))
+                return provided;
+
             if (candidates.Count == 0)
             {
                 throw new InvalidOperationException(
@@ -438,6 +447,7 @@ namespace UniSpring.DependencyInjection
 
             m_Disposables.Clear();
             m_StrategyRegistries.Clear();
+            m_Provided.Clear();
             m_Instances.Clear();
             m_RegisteredInstances.Clear();
             m_Creating.Clear();
@@ -630,6 +640,62 @@ namespace UniSpring.DependencyInjection
             EnsureInterceptors();
             m_Aop.Validate(instance.GetType());
             return m_Aop.Advise(instance, contract);
+        }
+
+        /// <summary>Root only: the bean a provider makes for the contract, created once.</summary>
+        private bool TryProvide(Type contract, out object bean)
+        {
+            if (m_Provided.TryGetValue(contract, out bean))
+                return true;
+
+            var providers = Providers();
+            for (var index = 0; index < providers.Length; index++)
+            {
+                if (!providers[index].Provides(contract))
+                    continue;
+
+                bean = providers[index].Create(contract, this);
+                if (bean == null)
+                {
+                    throw new InvalidOperationException(
+                        "UniSpring DI: " + providers[index].GetType().FullName + " provided no bean for " +
+                        contract.FullName + "." + DescribePath());
+                }
+
+                m_Provided.Add(contract, bean);
+                var disposable = bean as IDisposable;
+                if (disposable != null)
+                    m_Disposables.Add(disposable);
+                return true;
+            }
+
+            bean = null;
+            return false;
+        }
+
+        /// <summary>The provider beans, created on first need; while they are being created nothing is provided.</summary>
+        private IContractProvider[] Providers()
+        {
+            if (m_Providers != null)
+                return m_Providers;
+            if (m_CollectingProviders)
+                return Array.Empty<IContractProvider>();
+
+            m_CollectingProviders = true;
+            try
+            {
+                var beans = GetAll(typeof(IContractProvider));
+                var providers = new IContractProvider[beans.Count];
+                for (var index = 0; index < beans.Count; index++)
+                    providers[index] = (IContractProvider)beans[index];
+                m_Providers = providers;
+            }
+            finally
+            {
+                m_CollectingProviders = false;
+            }
+
+            return m_Providers;
         }
 
         private ApplicationContext RootContext()
