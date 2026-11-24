@@ -1,6 +1,6 @@
 {
     "name": "com.ialex86.unispring",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "displayName": "UniSpring",
     "description": "Dependency Injection, lifecycle, events, ticks, declarative transactions, Spring Data-style repositories for saves and structured logging for Unity, inspired by the Spring Framework.",
     "unity": "6000.0",
