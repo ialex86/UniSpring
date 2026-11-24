@@ -29,6 +29,42 @@ public sealed class InventoryService : IInventoryService
 `ScriptableObject`, prefabs and scene objects are not beans. Use
 `AutowiredMonoBehaviour` for Unity components.
 
+## Selecting and injecting implementations
+
+A single dependency such as `IItemCatalog` must have one matching bean, or exactly one `[Primary]` among multiple scanned candidates. Missing or ambiguous single dependencies fail resolution. An explicitly registered instance under the requested contract takes precedence for single resolution; it does not remove scanned beans from collection resolution or warm-up.
+
+Inject `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>` or a one-dimensional `T[]` to receive all matching implementations. An empty collection is valid. Mutable collection contracts (`List<T>`, `IList<T>`, `ICollection<T>`) are not automatically populated. `[Primary]` does not filter collections. The container returns registered instances first, followed by discovered beans in its definition order.
+
+```csharp
+using System.Collections.Generic;
+using UniSpring.DependencyInjection;
+
+public interface IStartupCheck { void Check(); }
+
+[Component]
+public sealed class StorageCheck : IStartupCheck
+{
+    public void Check() { /* validate storage */ }
+}
+
+[Service]
+public sealed class StartupChecks
+{
+    private readonly IReadOnlyList<IStartupCheck> m_Checks;
+
+    public StartupChecks(IReadOnlyList<IStartupCheck> checks)
+        => m_Checks = checks;
+
+    public void Run()
+    {
+        foreach (var check in m_Checks)
+            check.Check();
+    }
+}
+```
+
+Collection resolution is strict: every matching bean must be resolvable from the requesting scope. For example, do not inject a collection containing scene-scoped beans into an application-scoped service. Use a scene-scoped consumer or separate the contracts.
+
 ## Lifetimes and scopes
 
 | Lifetime | Owner |
@@ -56,6 +92,14 @@ private void OnDestroy()
 
 Dependencies injected earlier stay usable as objects; only beans that
 implement `IDisposable` have been disposed.
+
+### Ownership and disposal
+
+Application and Scene beans created by the container are disposed with their owning scope if they implement `IDisposable`. Transient instances are owned by their consumers; the consumer must arrange disposal. Instances supplied with `RegisterInstance` and objects passed to `Autowire` remain externally owned. Register external configuration before warm-up, and do not assume registration suppresses construction of a scanned bean.
+
+An application bean is created in the root even if requested from a scene: it cannot capture scene-scoped dependencies. Container operations are thread-affine; use `RuntimeContext` on the Unity main thread.
+
+Use `JoinSceneScope` before loading the joined scene. Its path-based API should not be relied on to distinguish multiple concurrently loaded instances of the same scene asset.
 
 ## MonoBehaviour
 
@@ -120,8 +164,11 @@ Rules:
 - An instance passed to `RegisterInstance` is advised like a bean once the
   container has warmed up. Inside the configure hook it is returned as it is.
 - In both cases, if the bean handed out early has advised methods, the
-  container logs a warning: that one reference skips the advice, while
-  everything resolved later gets the proxy.
+  container logs a warning: that one reference skips the advice and is not
+  proxied retroactively, while everything resolved later gets the proxy.
+  Avoid resolving strategy registries during interceptor creation or in the
+  configure hook: a registry is a snapshot and would keep the unproxied
+  references.
 - A failure in `ScopeInterceptor.Complete` or in disposing the scope never
   replaces the exception of the method itself; it is attached to it in
   `Exception.Data`.
@@ -169,6 +216,65 @@ public sealed class ImportService
 `StrategyRegistry.Require` throws when no strategy has the key; `TryGet`
 returns false instead. A registry is a snapshot taken when it is first
 resolved; register strategy instances before that.
+
+### Registry contract and testing
+
+A strategy may advertise several domain keys; all must be unique across the registry. A null key or null key collection is invalid. Duplicate keys fail when the registry is built (during warm-up if an application bean requires it). A missing key fails at `Require`, while `TryGet` is appropriate for optional behavior.
+
+A registry is a snapshot of instances cached in the resolving scope, not a factory. Repeated `Require` calls return the same instance even for Transient strategies. Register matching external instances before the registry is requested; late registration that would affect an existing registry is rejected. Prefer stateless strategies, and avoid disposable Transient strategies in automatically resolved registries: the registry itself does not dispose them.
+
+Keep AOP interceptors and pre-warm-up configuration independent of advised strategy registries. Early resolution can capture unproxied references in a snapshot; do not rely on those references becoming proxied later.
+
+The registry is a plain C# object and can be constructed without a container. This self-contained NUnit example tests dispatch and its missing-key contract. Place it in an EditMode test assembly referencing `UniSpring.DependencyInjection`:
+
+```csharp
+using System;
+using System.Collections.Generic;
+using NUnit.Framework;
+using UniSpring.DependencyInjection;
+
+public sealed class RegistryTests
+{
+    private enum Kind { Double, Missing }
+
+    private interface IRule : IKeyedStrategy<Kind>
+    {
+        int Apply(int value);
+    }
+
+    private sealed class DoubleRule : IRule
+    {
+        public IEnumerable<Kind> Keys => new[] { Kind.Double };
+        public int Apply(int value) => value * 2;
+    }
+
+    private sealed class Calculator
+    {
+        private readonly StrategyRegistry<Kind, IRule> m_Rules;
+        public Calculator(StrategyRegistry<Kind, IRule> rules) => m_Rules = rules;
+        public int Apply(Kind kind, int value) => m_Rules.Require(kind).Apply(value);
+    }
+
+    [Test]
+    public void DispatchesWithoutAContainer()
+    {
+        var registry = new StrategyRegistry<Kind, IRule>(new IRule[] { new DoubleRule() });
+        var calculator = new Calculator(registry);
+        Assert.That(calculator.Apply(Kind.Double, 10), Is.EqualTo(20));
+        Assert.That(registry.TryGet(Kind.Missing, out _), Is.False);
+        Assert.Throws<InvalidOperationException>(() => calculator.Apply(Kind.Missing, 10));
+    }
+
+    [Test]
+    public void RejectsDuplicateKeys()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            new StrategyRegistry<Kind, IRule>(new IRule[] { new DoubleRule(), new DoubleRule() }));
+    }
+}
+```
+
+Use separate container integration tests to check scanning, injection, module boundaries and scene lifetimes.
 
 ## Composition
 
@@ -237,4 +343,6 @@ player build. It preserves, in every assembly that depends on UniSpring:
   every `[ComponentFamily]` member;
 - every type that declares `[Autowired]` members or `[PostConstruct]` methods.
 
-Nothing has to be configured in the consuming project.
+No extra linker configuration is normally expected for these types. This does
+not establish IL2CPP/AOT compatibility; see [IL2CPP](il2cpp.md) and verify a
+real player build.

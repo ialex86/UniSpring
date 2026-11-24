@@ -6,6 +6,7 @@ Framework.
 
 - [Dependency injection](dependency-injection.md)
 - [Transactions](transactions.md)
+- [Worked example: a minimal transaction store](transaction-store-example.md)
 - [Logging](logging.md)
 - [Configuration](configuration.md)
 - [IL2CPP](il2cpp.md): what to change for iOS, consoles, WebGL and Android release builds

@@ -45,3 +45,4 @@ and the project follows [Semantic Versioning](https://semver.org/).
   re-entrant access while it builds; log backends can be removed in any
   order; a warning when an advised bean is handed out before AOP is ready.
 - EditMode tests and a `Basic Setup` sample.
+- `AGENTS.md` with the architecture conventions for AI-assisted development.

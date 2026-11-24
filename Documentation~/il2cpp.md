@@ -14,9 +14,9 @@ your own build.
 | --- | --- |
 | `[Transactional]` | Replace it with `ITransactionManager.Run` / `RunAsync` |
 | Your own `IMethodInterceptor` advice | Do not rely on it; call the logic explicitly |
-| Code stripping | Nothing: a `link.xml` is generated on every build |
+| Code stripping | `link.xml` is generated; verify stripping and AOT behavior in a player build |
 | `logging.properties` on Android / WebGL | Ship it as a `Resources` text asset |
-| Everything else (DI, scopes, strategies, logging) | Nothing |
+| Everything else (DI, scopes, strategies, logging) | No additional configuration currently expected; IL2CPP compatibility is unverified |
 
 ## 1. Replace `[Transactional]` with `Run` / `RunAsync`
 
@@ -102,6 +102,11 @@ methods, in all assemblies that depend on UniSpring.
 Types that only *your* code reaches by reflection (not through UniSpring
 attributes) are not covered; keep them with your own `link.xml` or
 `[Preserve]` as in any IL2CPP project.
+
+Linker preservation is not proof of AOT compatibility: reflected closed generic
+instantiations (for example, strategy registries) may still require AOT-specific
+work. Test representative registries, scene lifetimes and explicit transactions
+in a real player build on each target backend.
 
 ## 4. Logging configuration
 

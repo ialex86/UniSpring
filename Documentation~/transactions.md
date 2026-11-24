@@ -10,7 +10,7 @@ Mono scripting backend only. On IL2CPP use the explicit form below; see
 ## Explicit use
 
 `Run` and `RunAsync` apply the same rules as the attribute without a proxy.
-They work on every scripting backend and anywhere the attribute cannot reach
+They do not require runtime proxies and can be used wherever the attribute cannot reach
 (MonoBehaviours, private methods, classes resolved by their own type):
 
 ```csharp
@@ -52,12 +52,14 @@ Rules, as with the other AOP advice:
 - Calls made through that interface are advised; `this.Method()` is not.
 - A class resolved by its own type is never proxied.
 - Async methods (`Task`, `Task<T>`) keep the transaction until their task
-  completes. `ValueTask` and iterators are refused when the bean is created.
+  completes. `async void`, `ValueTask` and iterators are refused when the bean
+  is created: their work would outlive the transaction.
 - For a narrower unit of work call `ITransactionManager.Begin()` yourself.
 
 ## Commit and rollback
 
 The default is **commit when the call ends**, including when the method throws.
+This differs from Spring’s usual default rollback on unchecked exceptions.
 Modules usually change their in-memory state as they go, so there is nothing
 left to roll back.
 
@@ -77,9 +79,14 @@ failure of the following commit, rollback or dispose is attached to it in
 `Exception.Data` (`UniSpring.Scope.CompletionFailure`,
 `UniSpring.Scope.DisposeFailure`; `UniSpring.Transaction.*` for `Run`).
 
-For an async method, commit, rollback and dispose run on the thread that
-completes the method's task. Heavy work may therefore finish off the main
-thread, and `ITransaction` must not assume Unity's main thread there.
+For asynchronous work, transaction completion may run outside the captured
+Unity synchronization context. `ConfigureAwait(false)` does not guarantee a
+particular thread. Commit, rollback and dispose must not assume Unity's main
+thread; explicitly marshal engine-specific work if needed.
+
+For a complete, runnable example of the manager and transaction interfaces,
+see [the counter store walkthrough](transaction-store-example.md), including
+nested transactions and NUnit tests.
 
 ## Implementing the store
 
