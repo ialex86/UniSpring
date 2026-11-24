@@ -19,6 +19,7 @@ jobs:
           set -euo pipefail
           host=".ci/UniSpringTestProject"
           rm -rf "$host"
+          mkdir -p "$(dirname "$host")"
           cp -R "Tests~/UnityProject" "$host"
           cat > "$host/Packages/manifest.json" <<EOF
           {
