@@ -14,7 +14,8 @@ namespace UniSpring.DependencyInjection
     /// its class is never proxied (the container refuses it when the bean has advised methods). A matching method
     /// that implements no interface method is refused at the bean's creation, so advice is never lost silently.
     /// Interceptors are created first in the warm-up and are application beans; what they depend on is handed out
-    /// unproxied.
+    /// unproxied. When such a dependency has advised methods itself, a warning says so: the interceptor's own
+    /// reference skips the advice, everyone who resolves the bean later gets the proxy.
     /// </para>
     /// <para>
     /// The proxies are generated at run time (<see cref="DispatchProxy"/>, Reflection.Emit): Mono only, not IL2CPP.

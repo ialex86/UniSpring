@@ -162,6 +162,32 @@ namespace UniSpring.DependencyInjection.Tests
         }
 
         [Test]
+        public void An_Advised_Bean_An_Interceptor_Depends_On_Is_Reported()
+        {
+            UnityEngine.TestTools.LogAssert.Expect(
+                UnityEngine.LogType.Warning,
+                new System.Text.RegularExpressions.Regex("TracedService has advised methods but was handed out before"));
+
+            var context = ApplicationContext.BuildFromTypes(
+                new[] { typeof(Trace), typeof(TraceInterceptor), typeof(TracedService), typeof(DependentInterceptor) });
+
+            Assert.IsInstanceOf<AopProxy>(context.Get<ITracedService>(), "beans resolved later still get the proxy");
+            context.Dispose();
+        }
+
+        [Component]
+        public sealed class DependentInterceptor : IMethodInterceptor
+        {
+            public DependentInterceptor(ITracedService service)
+            {
+            }
+
+            public bool Matches(MethodInfo targetMethod) => false;
+
+            public object Invoke(IMethodInvocation invocation) => invocation.Proceed();
+        }
+
+        [Test]
         public void A_Registered_Instance_Is_Advised_Like_A_Bean()
         {
             var trace = new Trace();

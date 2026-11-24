@@ -23,6 +23,7 @@ namespace UniSpring.DependencyInjection
         private static int s_MainThreadId;
         private static ApplicationContext s_Context;
         private static Exception s_BuildFailure;
+        private static bool s_Building;
         private static bool s_ShutDown;
         private static SceneScopes<Scene> s_Scenes;
         private static Action<ApplicationContext> s_Configure;
@@ -222,8 +223,17 @@ namespace UniSpring.DependencyInjection
             Application.quitting -= OnQuitting;
             Application.quitting += OnQuitting;
 
-            s_ShutDown = false;
-            DisposeSession();
+            // While the previous session's beans are disposed, an access from their Dispose must not build a
+            // new container.
+            s_ShutDown = true;
+            try
+            {
+                DisposeSession();
+            }
+            finally
+            {
+                s_ShutDown = false;
+            }
         }
 
         /// <summary>
@@ -347,6 +357,14 @@ namespace UniSpring.DependencyInjection
                     "the inner exception is the first error.", s_BuildFailure);
             }
 
+            if (s_Building)
+            {
+                throw new InvalidOperationException(
+                    "UniSpring DI RuntimeContext is already building: a bean or the configure hook accessed " +
+                    "RuntimeContext during the build. Take the dependency through the constructor instead.");
+            }
+
+            s_Building = true;
             try
             {
                 s_Context = ApplicationContext.Build(
@@ -358,6 +376,10 @@ namespace UniSpring.DependencyInjection
             {
                 s_BuildFailure = exception;
                 throw;
+            }
+            finally
+            {
+                s_Building = false;
             }
         }
 

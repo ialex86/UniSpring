@@ -24,6 +24,7 @@ namespace UniSpring.DependencyInjection
             new ConditionalWeakTable<object, Dictionary<Type, object>>();
         private IMethodInterceptor[] m_Interceptors;
         private bool m_Collecting;
+        private readonly HashSet<Type> m_EarlyExposures = new HashSet<Type>();
 
         /// <summary>The interceptors are known: from here on beans are checked and proxied.</summary>
         public bool IsReady => m_Interceptors != null;
@@ -44,6 +45,7 @@ namespace UniSpring.DependencyInjection
                 for (var index = 0; index < beans.Count; index++)
                     interceptors[index] = (IMethodInterceptor)beans[index];
                 Use(interceptors);
+                ReportEarlyExposures();
             }
             finally
             {
@@ -54,6 +56,28 @@ namespace UniSpring.DependencyInjection
         public void Use(IMethodInterceptor[] interceptors)
         {
             m_Interceptors = interceptors ?? throw new ArgumentNullException(nameof(interceptors));
+        }
+
+        /// <summary>
+        /// A bean handed out before the interceptors were known (to an interceptor, or inside the configure hook)
+        /// went out without a proxy. That is allowed, but when the bean turns out to have advised methods the holder
+        /// of that reference calls them without advice: say so once, as Spring does for beans that are "not eligible
+        /// for auto-proxying". Everyone who resolves the bean later gets the proxy.
+        /// </summary>
+        private void ReportEarlyExposures()
+        {
+            foreach (var implementation in m_EarlyExposures)
+            {
+                if (!IsAdvised(implementation))
+                    continue;
+                UnityEngine.Debug.LogWarning(
+                    "UniSpring DI: " + implementation.FullName + " has advised methods but was handed out before " +
+                    "the interceptors were ready (to an interceptor's dependency chain or inside the configure " +
+                    "hook). That reference is not proxied: calls made through it skip the advice. Beans resolved " +
+                    "later get the proxy.");
+            }
+
+            m_EarlyExposures.Clear();
         }
 
         /// <summary>
@@ -81,9 +105,15 @@ namespace UniSpring.DependencyInjection
         /// <summary>The bean as <paramref name="contract"/>: through a proxy when the contract has advised methods.</summary>
         public object Advise(object instance, Type contract)
         {
-            if (instance == null || !IsReady || instance is AopProxy)
+            if (instance == null || instance is AopProxy)
                 return instance;
             var implementation = instance.GetType();
+            if (!IsReady)
+            {
+                m_EarlyExposures.Add(implementation);
+                return instance;
+            }
+
             if (!IsAdvised(implementation))
                 return instance;
             if (!contract.IsInterface)

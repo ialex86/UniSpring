@@ -269,6 +269,11 @@ namespace UniSpring.DependencyInjection
             return scope;
         }
 
+        /// <summary>
+        /// Registers an externally owned instance under the contract <typeparamref name="T"/>. It wins over
+        /// scanned beans for that contract; collections include it alongside them. Register a strategy instance
+        /// before a matching <see cref="StrategyRegistry{TKey,TStrategy}"/> is resolved: a registry is a snapshot.
+        /// </summary>
         public void RegisterInstance<T>(T instance)
             where T : class
         {
@@ -277,6 +282,13 @@ namespace UniSpring.DependencyInjection
 
             if (instance == null)
                 throw new ArgumentNullException(nameof(instance));
+            if (HasRegistryFor(instance))
+            {
+                throw new InvalidOperationException(
+                    "UniSpring DI: a StrategyRegistry that would include " + instance.GetType().FullName +
+                    " is already built in this scope or its children. Register strategy instances before " +
+                    "the registry is resolved.");
+            }
 
             var contract = typeof(T);
             if (m_RegisteredInstances.ContainsKey(contract))
@@ -607,12 +619,14 @@ namespace UniSpring.DependencyInjection
         /// handed out through a proxy when the contract has advised methods,
         /// so its advice is never lost silently. Inside the configure hook
         /// (before warm-up) it is returned as it is: the interceptors may
-        /// depend on instances that are still being registered.
+        /// depend on instances that are still being registered. A warning
+        /// is logged later if such an instance has advised methods.
         /// </summary>
         private object AdviseRegistered(object instance, Type contract)
         {
-            if (!RootContext().m_WarmUpStarted)
-                return instance;
+            // Not ready yet: handed out as it is, and reported if it turns out to be advised.
+            if (!RootContext().m_WarmUpStarted && !m_Aop.IsReady)
+                return m_Aop.Advise(instance, contract);
             EnsureInterceptors();
             m_Aop.Validate(instance.GetType());
             return m_Aop.Advise(instance, contract);
@@ -689,10 +703,47 @@ namespace UniSpring.DependencyInjection
         {
             object registry;
             if (m_StrategyRegistries.TryGetValue(registryType, out registry))
+            {
+                if (registry == null)
+                {
+                    throw new InvalidOperationException(
+                        "UniSpring DI circular strategy registry: " + registryType.FullName +
+                        " is requested by one of its own strategies." + DescribePath());
+                }
+
                 return registry;
-            registry = CreateStrategyRegistry(registryType);
-            m_StrategyRegistries[registryType] = registry;
-            return registry;
+            }
+
+            // Placeholder while the strategies are created: one of them asking for this registry is a cycle.
+            m_StrategyRegistries.Add(registryType, null);
+            try
+            {
+                registry = CreateStrategyRegistry(registryType);
+                m_StrategyRegistries[registryType] = registry;
+                return registry;
+            }
+            catch
+            {
+                m_StrategyRegistries.Remove(registryType);
+                throw;
+            }
+        }
+
+        private bool HasRegistryFor(object instance)
+        {
+            foreach (var registryType in m_StrategyRegistries.Keys)
+            {
+                if (registryType.GetGenericArguments()[1].IsInstanceOfType(instance))
+                    return true;
+            }
+
+            for (var index = 0; index < m_Children.Count; index++)
+            {
+                if (m_Children[index].HasRegistryFor(instance))
+                    return true;
+            }
+
+            return false;
         }
 
         private object CreateStrategyRegistry(Type registryType)
@@ -744,7 +795,13 @@ namespace UniSpring.DependencyInjection
             if (contract.IsArray)
             {
                 elementType = contract.GetElementType();
-                return elementType != null;
+                if (elementType == null || contract != elementType.MakeArrayType())
+                {
+                    throw new InvalidOperationException(
+                        "UniSpring DI injects one-dimensional arrays only: " + contract.FullName + ".");
+                }
+
+                return true;
             }
 
             if (!contract.IsGenericType)

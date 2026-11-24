@@ -72,7 +72,10 @@ public void Import(string path)
 ```
 
 The transaction is disposed after commit or rollback, whether it succeeded or
-not.
+not. When the method itself threw, the caller always sees that exception: a
+failure of the following commit, rollback or dispose is attached to it in
+`Exception.Data` (`UniSpring.Scope.CompletionFailure`,
+`UniSpring.Scope.DisposeFailure`; `UniSpring.Transaction.*` for `Run`).
 
 For an async method, commit, rollback and dispose run on the thread that
 completes the method's task. Heavy work may therefore finish off the main

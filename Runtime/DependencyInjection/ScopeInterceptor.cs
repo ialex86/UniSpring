@@ -35,6 +35,10 @@ namespace UniSpring.DependencyInjection
             var name = targetMethod.DeclaringType?.FullName + "." + targetMethod.Name;
             if (targetMethod.IsGenericMethodDefinition)
                 throw new NotSupportedException(GetType().Name + " cannot advise the generic method " + name + ".");
+            if (targetMethod.ReturnType == typeof(void) &&
+                targetMethod.IsDefined(typeof(AsyncStateMachineAttribute), false))
+                throw new NotSupportedException(GetType().Name + " cannot advise the async void method " + name +
+                                                ": it runs on after the call returns, outside the scope.");
             if (targetMethod.IsDefined(typeof(IteratorStateMachineAttribute), false) ||
                 targetMethod.IsDefined(typeof(AsyncIteratorStateMachineAttribute), false))
                 throw new NotSupportedException(GetType().Name + " cannot advise the iterator " + name +
@@ -54,7 +58,9 @@ namespace UniSpring.DependencyInjection
         /// Called once when the call ends, before the scope is disposed:
         /// <paramref name="error"/> is null when the method returned normally.
         /// The default does nothing; override it when the advice has to commit
-        /// or roll back. An exception thrown here replaces the method's own.
+        /// or roll back. When the method itself failed, its exception stays
+        /// the one the caller sees: a failure thrown here is attached to it
+        /// (<c>Exception.Data["UniSpring.Scope.CompletionFailure"]</c>).
         /// </summary>
         protected virtual void Complete(IDisposable scope, Exception error)
         {
@@ -65,7 +71,29 @@ namespace UniSpring.DependencyInjection
                 GetType().FullName + " opened no scope for " + invocation.Method.Name + ".");
 
         internal void CompleteFor(IDisposable scope, Exception error)
-            => Complete(scope, error);
+        {
+            try
+            {
+                Complete(scope, error);
+            }
+            catch (Exception cleanup) when (error != null)
+            {
+                error.Data["UniSpring.Scope.CompletionFailure"] = cleanup.ToString();
+            }
+        }
+
+        /// <summary>Disposes the scope; a failure never hides the exception the call already has.</summary>
+        internal static void DisposeFor(IDisposable scope, Exception error)
+        {
+            try
+            {
+                scope.Dispose();
+            }
+            catch (Exception cleanup) when (error != null)
+            {
+                error.Data["UniSpring.Scope.DisposeFailure"] = cleanup.ToString();
+            }
+        }
     }
 
     /// <summary>How a scope spans a call, by the method's return type; one per return type.</summary>
@@ -104,6 +132,7 @@ namespace UniSpring.DependencyInjection
             public override object Run(ScopeInterceptor interceptor, IMethodInvocation invocation)
             {
                 var scope = interceptor.OpenFor(invocation);
+                Exception primary = null;
                 try
                 {
                     object result;
@@ -120,9 +149,14 @@ namespace UniSpring.DependencyInjection
                     interceptor.CompleteFor(scope, null);
                     return result;
                 }
+                catch (Exception exception)
+                {
+                    primary = exception;
+                    throw;
+                }
                 finally
                 {
-                    scope.Dispose();
+                    ScopeInterceptor.DisposeFor(scope, primary);
                 }
             }
         }
@@ -137,6 +171,7 @@ namespace UniSpring.DependencyInjection
             private static async Task<TResult> RunAsync(ScopeInterceptor interceptor, IMethodInvocation invocation)
             {
                 var scope = interceptor.OpenFor(invocation);
+                Exception primary = null;
                 try
                 {
                     TResult result;
@@ -159,9 +194,14 @@ namespace UniSpring.DependencyInjection
                     interceptor.CompleteFor(scope, null);
                     return result;
                 }
+                catch (Exception exception)
+                {
+                    primary = exception;
+                    throw;
+                }
                 finally
                 {
-                    scope.Dispose();
+                    ScopeInterceptor.DisposeFor(scope, primary);
                 }
             }
         }

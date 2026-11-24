@@ -23,6 +23,8 @@ public sealed class InventoryService : IInventoryService
 - `[Primary]` marks the default implementation when several beans match.
 - `[Order]` controls warm-up order.
 - `[PostConstruct]` runs once after every dependency of the bean is injected.
+  The method must be synchronous, `void` and parameterless. If it throws, the
+  bean is disposed and the error propagates.
 
 `ScriptableObject`, prefabs and scene objects are not beans. Use
 `AutowiredMonoBehaviour` for Unity components.
@@ -113,9 +115,16 @@ Rules:
 - A bean with advised methods cannot be resolved by its class.
 - A generic or iterator method that would outlive the advice is refused when
   the bean is created.
-- Interceptors are application beans, created before the other beans.
+- Interceptors are application beans, created before the other beans. What an
+  interceptor depends on is handed to it without a proxy.
 - An instance passed to `RegisterInstance` is advised like a bean once the
   container has warmed up. Inside the configure hook it is returned as it is.
+- In both cases, if the bean handed out early has advised methods, the
+  container logs a warning: that one reference skips the advice, while
+  everything resolved later gets the proxy.
+- A failure in `ScopeInterceptor.Complete` or in disposing the scope never
+  replaces the exception of the method itself; it is attached to it in
+  `Exception.Data`.
 - Proxies are generated at run time with `DispatchProxy`: Mono only. On
   IL2CPP resolving an advised bean fails with an explanatory error; see
   [IL2CPP](il2cpp.md). `AopProxies.Create` builds one by hand for an object made with
@@ -158,7 +167,8 @@ public sealed class ImportService
 ```
 
 `StrategyRegistry.Require` throws when no strategy has the key; `TryGet`
-returns false instead.
+returns false instead. A registry is a snapshot taken when it is first
+resolved; register strategy instances before that.
 
 ## Composition
 

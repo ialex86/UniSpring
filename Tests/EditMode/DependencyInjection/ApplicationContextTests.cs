@@ -164,6 +164,42 @@ namespace UniSpring.DependencyInjection.Tests
         }
 
         [Test]
+        public void A_Bean_Whose_PostConstruct_Fails_Is_Disposed()
+        {
+            FailingInit.Disposed = 0;
+
+            Assert.Throws<InvalidOperationException>(
+                () => ApplicationContext.BuildFromTypes(new[] { typeof(FailingInit) }));
+            Assert.AreEqual(1, FailingInit.Disposed, "the half-built bean releases what it took");
+        }
+
+        [Test]
+        public void An_Async_PostConstruct_Is_Refused()
+        {
+            var error = Assert.Throws<InvalidOperationException>(
+                () => ApplicationContext.BuildFromTypes(new[] { typeof(AsyncInit) }));
+            StringAssert.Contains("[PostConstruct]", error.Message);
+        }
+
+        [Component]
+        public sealed class FailingInit : IDisposable
+        {
+            public static int Disposed;
+
+            [PostConstruct]
+            private void Init() => throw new InvalidOperationException("init failed");
+
+            public void Dispose() => Disposed++;
+        }
+
+        [Component]
+        public sealed class AsyncInit
+        {
+            [PostConstruct]
+            private async void Init() => await System.Threading.Tasks.Task.Yield();
+        }
+
+        [Test]
         public void An_Overridden_PostConstruct_Runs_Once()
         {
             var context = ApplicationContext.BuildFromTypes(new[] { typeof(DerivedInit) });

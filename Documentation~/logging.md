@@ -148,8 +148,8 @@ becomes `Inventory.Application.LocalInventoryApi`.
 ## Backend lifecycle
 
 The container installs `GameLogService` as the active backend for its lifetime.
-Disposing the container restores the previous backend, so a second container
-does not break the first one.
+Disposing the container removes its backend; the newest backend that is still
+installed stays active, in whatever order containers are disposed.
 
 To replace the backend yourself:
 

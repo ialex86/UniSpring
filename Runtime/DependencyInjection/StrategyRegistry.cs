@@ -8,6 +8,10 @@ namespace UniSpring.DependencyInjection
         IEnumerable<TKey> Keys { get; }
     }
 
+    /// <summary>
+    /// Immutable snapshot of the strategy instances known when it was built, transient strategies included:
+    /// a lookup returns the same instance for the lifetime of the registry.
+    /// </summary>
     public sealed class StrategyRegistry<TKey, TStrategy>
         where TStrategy : IKeyedStrategy<TKey>
     {
@@ -34,6 +38,12 @@ namespace UniSpring.DependencyInjection
 
                 foreach (var key in keys)
                 {
+                    if (key == null)
+                    {
+                        throw new InvalidOperationException(
+                            "UniSpring DI strategy " + strategy.GetType().FullName + " returned a null key.");
+                    }
+
                     TStrategy existing;
                     if (m_Strategies.TryGetValue(key, out existing))
                     {

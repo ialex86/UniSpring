@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using UniSpring.Logging.Domain;
@@ -20,6 +21,56 @@ namespace UniSpring.Logging
         private static readonly IGameLogger FallbackBackend = new UnityFallbackGameLogger();
         private static IGameLogger s_Backend;
         private static int s_EmptyCallerReported;
+
+        // Installations in order; the newest one that is still installed is the active backend. Removing one
+        // from the middle (containers disposed out of order) never brings a removed logger back.
+        private static readonly object s_BackendLock = new object();
+        private static readonly List<BackendRegistration> s_Registrations = new List<BackendRegistration>();
+        private static IGameLogger s_BaseBackend;
+
+        private sealed class BackendRegistration : IDisposable
+        {
+            public readonly IGameLogger Logger;
+            public readonly IGameLogger Previous;
+
+            public BackendRegistration(IGameLogger logger, IGameLogger previous)
+            {
+                Logger = logger;
+                Previous = previous;
+            }
+
+            public void Dispose()
+            {
+                lock (s_BackendLock)
+                {
+                    if (s_Registrations.Remove(this))
+                        PublishBackend();
+                }
+            }
+        }
+
+        private static void PublishBackend()
+        {
+            var count = s_Registrations.Count;
+            Volatile.Write(ref s_Backend, count == 0 ? s_BaseBackend : s_Registrations[count - 1].Logger);
+        }
+
+        private static BackendRegistration PushBackend(IGameLogger backend)
+        {
+            var registration = new BackendRegistration(backend, s_Backend);
+            s_Registrations.Add(registration);
+            PublishBackend();
+            return registration;
+        }
+
+        /// <summary>Installs a backend until the returned handle is disposed (used by the container).</summary>
+        internal static IDisposable RegisterBackend(IGameLogger backend)
+        {
+            if (backend == null)
+                throw new ArgumentNullException(nameof(backend));
+            lock (s_BackendLock)
+                return PushBackend(backend);
+        }
 
         [HideInCallstack]
         public static void Debug(object message, Object context = null, [CallerFilePath] string caller = "")
@@ -102,7 +153,8 @@ namespace UniSpring.Logging
         {
             if (backend == null)
                 throw new ArgumentNullException(nameof(backend));
-            return Interlocked.Exchange(ref s_Backend, backend);
+            lock (s_BackendLock)
+                return PushBackend(backend).Previous;
         }
 
         /// <summary>Installs only when no backend is active; used by the editor bootstrap.</summary>
@@ -110,18 +162,41 @@ namespace UniSpring.Logging
         {
             if (backend == null)
                 throw new ArgumentNullException(nameof(backend));
-            return Interlocked.CompareExchange(ref s_Backend, backend, null) == null;
+            lock (s_BackendLock)
+            {
+                if (s_Backend != null)
+                    return false;
+                s_BaseBackend = backend;
+                PublishBackend();
+                return true;
+            }
         }
 
         /// <summary>
-        /// Puts <paramref name="previous"/> back, but only while <paramref name="installed"/>
-        /// is still the active backend: a newer installation is never undone.
+        /// Removes the installation made by <c>InstallBackend(installed)</c> that returned
+        /// <paramref name="previous"/>, even when a newer backend is active. The newest
+        /// installation that is still in place stays (or becomes) the active backend.
         /// </summary>
         public static void RestoreBackend(IGameLogger installed, IGameLogger previous)
         {
             if (installed == null)
                 return;
-            Interlocked.CompareExchange(ref s_Backend, previous, installed);
+            lock (s_BackendLock)
+            {
+                for (var index = s_Registrations.Count - 1; index >= 0; index--)
+                {
+                    var registration = s_Registrations[index];
+                    if (!ReferenceEquals(registration.Logger, installed) ||
+                        !ReferenceEquals(registration.Previous, previous))
+                    {
+                        continue;
+                    }
+
+                    s_Registrations.RemoveAt(index);
+                    PublishBackend();
+                    break;
+                }
+            }
         }
 
         /// <summary>
@@ -145,7 +220,12 @@ namespace UniSpring.Logging
                 UnityDebug.LogException(exception);
             }
 
-            Interlocked.Exchange(ref s_Backend, backend);
+            lock (s_BackendLock)
+            {
+                s_Registrations.Clear();
+                s_BaseBackend = backend;
+                PublishBackend();
+            }
         }
 
         private static IGameLogger Backend => Volatile.Read(ref s_Backend) ?? FallbackBackend;

@@ -157,6 +157,37 @@ namespace UniSpring.Logging.Tests
         }
 
         [Test]
+        public void Backends_Removed_Out_Of_Order_Never_Bring_A_Removed_One_Back()
+        {
+            var original = ActiveBackend();
+            var first = new NullLogger();
+            var second = new NullLogger();
+            var firstHandle = GameLog.RegisterBackend(first);
+            var secondHandle = GameLog.RegisterBackend(second);
+            try
+            {
+                firstHandle.Dispose();
+                Assert.AreSame(second, ActiveBackend(), "the newer backend stays active");
+
+                secondHandle.Dispose();
+                Assert.AreSame(original, ActiveBackend(), "the removed first backend does not come back");
+            }
+            finally
+            {
+                firstHandle.Dispose();
+                secondHandle.Dispose();
+            }
+        }
+
+        private static IGameLogger ActiveBackend()
+        {
+            var probe = new NullLogger();
+            var active = GameLog.InstallBackend(probe);
+            GameLog.RestoreBackend(probe, active);
+            return active;
+        }
+
+        [Test]
         public void A_Second_Backend_Replaces_And_Restore_Brings_Back_The_Previous()
         {
             var first = new NullLogger();

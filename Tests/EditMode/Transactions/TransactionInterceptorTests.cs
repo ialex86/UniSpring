@@ -201,6 +201,41 @@ namespace UniSpring.Transactions.Tests
         }
 
         [Test]
+        public void Run_Refuses_Async_Void_Work()
+        {
+            var manager = new RecordingTransactionManager();
+            Action work = async () => await Task.Yield();
+
+            Assert.Throws<InvalidOperationException>(() => manager.Run(work));
+            CollectionAssert.IsEmpty(manager.Events);
+        }
+
+        [Test]
+        public void A_Commit_Failure_Does_Not_Hide_The_Exception_Of_The_Work()
+        {
+            var manager = new FailingCommitManager();
+
+            var error = Assert.Throws<ArgumentException>(
+                () => manager.Run(() => throw new ArgumentException("from the work")));
+            StringAssert.Contains("commit failed", (string)error.Data["UniSpring.Transaction.CompletionFailure"]);
+        }
+
+        private sealed class FailingCommitManager : ITransactionManager, ITransaction
+        {
+            public ITransaction Begin() => this;
+
+            public void Commit() => throw new InvalidOperationException("commit failed");
+
+            public void Rollback()
+            {
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+
+        [Test]
         public void Run_Refuses_Work_That_Returns_A_Task()
         {
             var manager = new RecordingTransactionManager();

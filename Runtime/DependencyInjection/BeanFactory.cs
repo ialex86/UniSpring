@@ -59,8 +59,25 @@ namespace UniSpring.DependencyInjection
                     exception.InnerException ?? exception);
             }
 
-            Inject(instance, plan);
-            return instance;
+            try
+            {
+                Inject(instance, plan);
+                return instance;
+            }
+            catch (Exception primary)
+            {
+                // The bean exists but is never handed out or tracked: release what its constructor took.
+                try
+                {
+                    (instance as IDisposable)?.Dispose();
+                }
+                catch (Exception cleanup)
+                {
+                    primary.Data["UniSpring.DI.PartialBeanDisposeFailure"] = cleanup.ToString();
+                }
+
+                throw;
+            }
         }
 
         public void Autowire(object target)
@@ -144,9 +161,13 @@ namespace UniSpring.DependencyInjection
                 {
                     if (!method.IsDefined(typeof(PostConstructAttribute), true))
                         continue;
-                    if (method.GetParameters().Length != 0)
+                    // A returned task would never be awaited, and async void runs on after the bean is handed out.
+                    if (method.GetParameters().Length != 0 || method.IsGenericMethod ||
+                        method.ReturnType != typeof(void) ||
+                        method.IsDefined(typeof(System.Runtime.CompilerServices.AsyncStateMachineAttribute), false))
                         throw new InvalidOperationException(
-                            "[PostConstruct] method must have no parameters: " + current.FullName + "." + method.Name + ".");
+                            "[PostConstruct] requires a synchronous non-generic void method with no parameters: " +
+                            current.FullName + "." + method.Name + ".");
                     // The attribute is inherited: an override and the virtual method it overrides are one
                     // callback, and invoking both would run the override twice.
                     if (!postConstructSlots.Add(method.GetBaseDefinition()))

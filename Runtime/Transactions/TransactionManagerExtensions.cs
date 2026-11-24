@@ -17,25 +17,36 @@ namespace UniSpring.Transactions
         {
             if (work == null)
                 throw new ArgumentNullException(nameof(work));
+            foreach (var callback in work.GetInvocationList())
+            {
+                if (callback.Method.IsDefined(typeof(System.Runtime.CompilerServices.AsyncStateMachineAttribute), false))
+                    throw new InvalidOperationException("Run cannot execute async void work; use RunAsync.");
+            }
 
             var transaction = Begin(transactions);
+            Exception primary = null;
             try
             {
                 try
                 {
                     work();
                 }
-                catch
+                catch (Exception exception)
                 {
-                    Finish(transaction, rollbackOnError);
+                    FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
                 transaction.Commit();
             }
+            catch (Exception exception)
+            {
+                primary = exception;
+                throw;
+            }
             finally
             {
-                transaction.Dispose();
+                DisposeAfterCall(transaction, primary);
             }
         }
 
@@ -43,13 +54,14 @@ namespace UniSpring.Transactions
         {
             if (work == null)
                 throw new ArgumentNullException(nameof(work));
-            if (typeof(Task).IsAssignableFrom(typeof(T)))
+            if (typeof(Task).IsAssignableFrom(typeof(T)) || typeof(T).GetMethod("GetAwaiter", Type.EmptyTypes) != null)
             {
                 throw new InvalidOperationException(
-                    "Run would commit before the returned task completes; use RunAsync for asynchronous work.");
+                    "Run would commit before the returned task or awaitable completes; use RunAsync for asynchronous work.");
             }
 
             var transaction = Begin(transactions);
+            Exception primary = null;
             try
             {
                 T result;
@@ -57,18 +69,23 @@ namespace UniSpring.Transactions
                 {
                     result = work();
                 }
-                catch
+                catch (Exception exception)
                 {
-                    Finish(transaction, rollbackOnError);
+                    FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
                 transaction.Commit();
                 return result;
             }
+            catch (Exception exception)
+            {
+                primary = exception;
+                throw;
+            }
             finally
             {
-                transaction.Dispose();
+                DisposeAfterCall(transaction, primary);
             }
         }
 
@@ -84,6 +101,7 @@ namespace UniSpring.Transactions
                 throw new ArgumentNullException(nameof(work));
 
             var transaction = Begin(transactions);
+            Exception primary = null;
             try
             {
                 try
@@ -91,17 +109,22 @@ namespace UniSpring.Transactions
                     var task = work() ?? throw new InvalidOperationException("The transactional work returned no task.");
                     await task.ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
-                    Finish(transaction, rollbackOnError);
+                    FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
                 transaction.Commit();
             }
+            catch (Exception exception)
+            {
+                primary = exception;
+                throw;
+            }
             finally
             {
-                transaction.Dispose();
+                DisposeAfterCall(transaction, primary);
             }
         }
 
@@ -113,6 +136,7 @@ namespace UniSpring.Transactions
                 throw new ArgumentNullException(nameof(work));
 
             var transaction = Begin(transactions);
+            Exception primary = null;
             try
             {
                 T result;
@@ -121,18 +145,23 @@ namespace UniSpring.Transactions
                     var task = work() ?? throw new InvalidOperationException("The transactional work returned no task.");
                     result = await task.ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
-                    Finish(transaction, rollbackOnError);
+                    FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
                 transaction.Commit();
                 return result;
             }
+            catch (Exception exception)
+            {
+                primary = exception;
+                throw;
+            }
             finally
             {
-                transaction.Dispose();
+                DisposeAfterCall(transaction, primary);
             }
         }
 
@@ -144,12 +173,32 @@ namespace UniSpring.Transactions
                 "ITransactionManager.Begin returned no transaction.");
         }
 
-        private static void Finish(ITransaction transaction, bool rollbackOnError)
+        /// <summary>The work failed: its exception stays the one the caller sees.</summary>
+        private static void FinishAfterFailure(ITransaction transaction, bool rollbackOnError, Exception primary)
         {
-            if (rollbackOnError)
-                transaction.Rollback();
-            else
-                transaction.Commit();
+            try
+            {
+                if (rollbackOnError)
+                    transaction.Rollback();
+                else
+                    transaction.Commit();
+            }
+            catch (Exception cleanup)
+            {
+                primary.Data["UniSpring.Transaction.CompletionFailure"] = cleanup.ToString();
+            }
+        }
+
+        private static void DisposeAfterCall(ITransaction transaction, Exception primary)
+        {
+            try
+            {
+                transaction.Dispose();
+            }
+            catch (Exception cleanup) when (primary != null)
+            {
+                primary.Data["UniSpring.Transaction.DisposeFailure"] = cleanup.ToString();
+            }
         }
     }
 }

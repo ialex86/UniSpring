@@ -220,7 +220,7 @@ namespace UniSpring.Logging.Services
     internal sealed class GameLogBackendInstaller : IDisposable
     {
         private readonly IGameLogger m_Logger;
-        private IGameLogger m_Previous;
+        private IDisposable m_Registration;
         private bool m_Installed;
 
         public GameLogBackendInstaller(IGameLogger logger)
@@ -238,7 +238,7 @@ namespace UniSpring.Logging.Services
             // on a worker thread, so the configuration must not be loaded by
             // whichever thread happens to log first.
             m_Logger.Reload();
-            m_Previous = GameLog.InstallBackend(m_Logger);
+            m_Registration = GameLog.RegisterBackend(m_Logger);
             m_Installed = true;
         }
 
@@ -246,7 +246,8 @@ namespace UniSpring.Logging.Services
         {
             if (!m_Installed)
                 return;
-            GameLog.RestoreBackend(m_Logger, m_Previous);
+            m_Registration?.Dispose();
+            m_Registration = null;
             m_Installed = false;
         }
     }

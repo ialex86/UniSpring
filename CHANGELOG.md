@@ -39,4 +39,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
   `RuntimeContext.IsShutDown`.
 - `ITransactionManager.Run` / `RunAsync`: the transaction advice as a plain
   call, for IL2CPP and code the attribute cannot reach.
+- Hardening: a bean whose `[PostConstruct]` fails is disposed; `async void`
+  is refused in `[PostConstruct]`, advice and `Run`; a commit or dispose
+  failure no longer hides the original exception; `RuntimeContext` refuses
+  re-entrant access while it builds; log backends can be removed in any
+  order; a warning when an advised bean is handed out before AOP is ready.
 - EditMode tests and a `Basic Setup` sample.
