@@ -170,9 +170,10 @@ namespace UniSpring.Data.Internal
                 string backupError;
                 if (TryReadCopy(backup, out payload, out backupError))
                 {
-                    if (mainExists)
-                        GameLog.Warn("Document " + area + "/" + name + " is damaged (" + mainError + "); its backup is read.");
-                    return DocumentRead.Found(payload);
+                    if (!mainExists)
+                        return DocumentRead.Found(payload); // a replace was interrupted: the backup is the content
+                    GameLog.Warn("Document " + area + "/" + name + " is damaged (" + mainError + "); its backup is read.");
+                    return DocumentRead.FoundInBackup(payload, mainError);
                 }
 
                 return DocumentRead.Damaged((mainError ?? "the document file is missing") + "; backup: " + backupError);
@@ -257,21 +258,69 @@ namespace UniSpring.Data.Internal
         // ---------------------------------------------------------------- writes
 
         /// <summary>
-        /// Puts the changes on disk as one step: a single change directly, several through a journal. When the disk
-        /// refuses before the step is committed, nothing has changed and the exception is the disk's own; once it is
-        /// committed, <see cref="StepCommittedException"/>. Repeating the step is safe. A successful step covers
-        /// every earlier one that failed (the store retries from the oldest waiting change), so the journals those
-        /// left are removed: completing them later would put old content over new.
+        /// Puts the changes on disk as one step: a single change directly, several through a journal.
+        /// <para>
+        /// A committed journal is never rewritten or deleted before it is complete: a journal an earlier attempt left
+        /// (the disk refused while it was put in place) is completed first, and only then is this step prepared,
+        /// under a step id never used before (<paramref name="step"/> must be unique). So the old content lands
+        /// before the new one, and a failure while preparing this step cannot touch the earlier journal.
+        /// </para>
+        /// When the disk refuses before this step is committed, nothing of it has changed and the exception is the
+        /// disk's own; once a journal is committed (this one or an earlier one), <see cref="StepCommittedException"/>.
         /// </summary>
         public void Apply(IReadOnlyList<DocumentChange> changes, long step)
         {
+            CompletePending();
             if (changes.Count == 0)
                 return;
             if (changes.Count == 1)
+            {
                 ApplySingle(changes[0], step);
-            else
-                ApplyJournaled(changes, step);
-            DeleteJournals();
+                return;
+            }
+
+            ApplyJournaled(changes, step);
+        }
+
+        /// <summary>
+        /// Completes every committed journal on disk, oldest first, and drops incomplete ones. Throws
+        /// <see cref="StepCommittedException"/> when the disk refuses to finish one; it then stays for the next try.
+        /// </summary>
+        private void CompletePending()
+        {
+            var journals = new List<KeyValuePair<long, string>>();
+            foreach (var journal in m_Files.Files(Path.Combine(m_Root, JournalFolder), "*" + JournalExtension))
+            {
+                long id;
+                if (!long.TryParse(Path.GetFileNameWithoutExtension(journal), NumberStyles.None, CultureInfo.InvariantCulture, out id))
+                    id = long.MaxValue;
+                journals.Add(new KeyValuePair<long, string>(id, journal));
+            }
+
+            journals.Sort((left, right) => left.Key.CompareTo(right.Key));
+            foreach (var journal in journals)
+            {
+                long id;
+                IReadOnlyList<KeyValuePair<string, string>> entries;
+                if (!TryReadJournal(journal.Value, out id, out entries))
+                {
+                    GameLog.Warn("UniSpring Data dropped an incomplete save step: " + Path.GetFileName(journal.Value));
+                    m_Files.Delete(journal.Value);
+                    continue;
+                }
+
+                try
+                {
+                    Replay(entries, id);
+                    m_Files.Delete(journal.Value);
+                }
+                catch (Exception exception)
+                {
+                    throw new StepCommittedException(exception);
+                }
+
+                GameLog.Info("UniSpring Data completed an interrupted save step (" + entries.Count + " documents).");
+            }
         }
 
         private void ApplyJournaled(IReadOnlyList<DocumentChange> changes, long step)
@@ -310,6 +359,7 @@ namespace UniSpring.Data.Internal
             try
             {
                 Replay(ParseEntries(lines.ToString()), step);
+                m_Files.Delete(journal);
             }
             catch (Exception exception)
             {
@@ -337,12 +387,6 @@ namespace UniSpring.Data.Internal
                 DeleteQuietly(new[] { temp });
                 throw;
             }
-        }
-
-        private void DeleteJournals()
-        {
-            foreach (var journal in m_Files.Files(Path.Combine(m_Root, JournalFolder), "*" + JournalExtension))
-                m_Files.Delete(journal);
         }
 
         private void DeleteQuietly(IEnumerable<string> paths)
@@ -417,23 +461,7 @@ namespace UniSpring.Data.Internal
         /// </summary>
         public void Recover()
         {
-            foreach (var journal in m_Files.Files(Path.Combine(m_Root, JournalFolder), "*" + JournalExtension))
-            {
-                long step;
-                IReadOnlyList<KeyValuePair<string, string>> entries;
-                if (TryReadJournal(journal, out step, out entries))
-                {
-                    Replay(entries, step);
-                    GameLog.Info("UniSpring Data completed an interrupted save step (" + entries.Count + " documents).");
-                }
-                else
-                {
-                    GameLog.Warn("UniSpring Data dropped an incomplete save step: " + Path.GetFileName(journal));
-                }
-
-                m_Files.Delete(journal);
-            }
-
+            CompletePending();
             foreach (var temp in m_Files.FilesBelow(m_Root, "*" + TempExtension))
                 m_Files.Delete(temp);
         }

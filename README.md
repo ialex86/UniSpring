@@ -35,10 +35,13 @@ Dependency Injection, declarative transactions and structured logging for Unity,
 - Application, Scene and Transient lifetimes, plus child scopes.
 - `AutowiredMonoBehaviour` for Unity components with `[Autowired]` members.
 - Keyed strategies through `StrategyRegistry<TKey, TStrategy>`.
+- Lifecycle hooks, application events (with after-commit delivery), beans
+  ticked by the player loop without MonoBehaviour hosts, and profiles.
 - Declarative transactions with `[Transactional]` and `ITransactionManager`.
 - Spring Data-style repositories for saves: declare a `[Repository]` interface,
   get query methods by name, mappers, validators and migrations, over a file
-  store that writes in the background with crash-safe transactions.
+  store that writes in the background with crash-safe transactions. Read-only
+  catalogs and settings bound to `Resources`.
 - Optional module-boundary policy (`*.Api` assemblies only).
 - `GameLog` facade with per-source levels, lazy messages, exception entries and
   pluggable sinks.
@@ -366,6 +369,7 @@ These are conceptual counterparts, not a promise of identical Spring semantics.
 | --- | --- |
 | [Dependency injection](Documentation~/dependency-injection.md) | Discover beans, inject collections, manage lifetimes, use strategies or configure module boundaries |
 | [Transactions](Documentation~/transactions.md) | Understand commit/rollback and implement a transaction manager |
+| [Lifecycle, events and ticks](Documentation~/lifecycle-events-ticks.md) | Start and stop beans, publish events between modules, tick beans every frame, choose beans by profile |
 | [Data](Documentation~/data.md) | Store saves through repository interfaces, mappers, validators and migrations |
 | [Logging](Documentation~/logging.md) | Configure levels, paths, sources, sinks and routing |
 | [IL2CPP](Documentation~/il2cpp.md) | Prepare and verify an AOT player build |

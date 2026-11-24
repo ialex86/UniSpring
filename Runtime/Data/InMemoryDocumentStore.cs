@@ -22,6 +22,9 @@ namespace UniSpring.Data
 
             /// <summary>Dropped by a new-game clear: what its flow writes until it ends is lost.</summary>
             public bool Dropped;
+
+            /// <summary>A rollback happened inside: the outermost commit saves nothing and throws.</summary>
+            public bool RollbackOnly;
         }
 
         private readonly object m_Gate = new object();
@@ -221,17 +224,26 @@ namespace UniSpring.Data
                 {
                     if (m_Transaction.Closed)
                         return;
+                    if (m_Transaction.RollbackOnly)
+                    {
+                        m_Transaction.Staged.Clear();
+                        throw new InvalidOperationException(FileDocumentStore.RollbackOnlyMessage);
+                    }
+
                     foreach (var staged in m_Transaction.Staged)
                         m_Store.Apply(staged.Key, staged.Value);
                     m_Transaction.Staged.Clear();
                 }
             }
 
-            /// <summary>Drops what the whole transaction holds so far, whichever lease asks.</summary>
+            /// <summary>Drops what the whole transaction holds and marks it rollback-only, as Spring's REQUIRED.</summary>
             public void Rollback()
             {
                 lock (m_Store.m_Gate)
+                {
                     m_Transaction.Staged.Clear();
+                    m_Transaction.RollbackOnly = true;
+                }
             }
 
             public void Dispose()

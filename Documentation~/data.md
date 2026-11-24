@@ -187,7 +187,10 @@ internal sealed class GarageService : IGarage
     [Transactional(RollbackOnError = true)]
     public void BuyCar(string owner, string carId, string model, long price)
     {
-        var wallet = m_Wallet.Load() ?? new Wallet(1000);
+        var read = m_Wallet.Read();
+        if (read.IsBroken)
+            throw new InvalidOperationException("The wallet save is broken: " + read.Error);
+        var wallet = read.Value ?? new Wallet(1000);
         if (wallet.Balance < price)
             throw new InvalidOperationException("Not enough money.");
 
@@ -202,8 +205,28 @@ internal sealed class GarageService : IGarage
 ## Repositories
 
 `IRepository<T>` keeps many objects, each under a string id:
-`Find`, `Exists`, `Save`, `Delete`, `All` and `Ids`. `IDocument<T>` keeps the
-one object of its type: `Load`, `Exists`, `Save`, `Delete`. Declare an
+`Find`, `Read`, `Exists`, `Save`, `Delete`, `All` and `Ids`. `IDocument<T>`
+keeps the one object of its type: `Load`, `Read`, `Exists`, `Save`, `Delete`.
+
+### Missing or broken
+
+`Load` and `Find` are lenient: a document that is damaged, unreadable or
+invalid is logged and returned as null, like a missing one. That suits data the
+game can rebuild. For data the player must not lose, use `Read`: it returns a
+`LoadResult<T>` with a status.
+
+| Status | Meaning |
+| --- | --- |
+| `Missing` | Nothing is stored under the id |
+| `Found` | Read, mapped and validated; `Value` holds the object |
+| `Damaged` | The store has no intact copy of the bytes |
+| `Unreadable` | The serializer or the mapper failed |
+| `Invalid` | A validator refused the object |
+
+Either way, once a read has found a document broken, `Save` over it throws
+`DocumentDamagedException`: `Load() ?? new Wallet(1000)` followed by a save can
+no longer replace the player's broken save with a fresh one by accident. Call
+`Delete` first to replace it on purpose. Declare an
 interface for each, even without extra methods: the repository is then explicit
 in every constructor.
 
@@ -227,9 +250,16 @@ After the prefix come public fields or properties of the stored type, joined by
 equality. Every stored object is loaded and compared in memory: there are no
 indexes, which suits game saves of tens or hundreds of documents.
 
+`ExistsBy` and a `FindBy` that returns one object stop at the first match; the
+others read every document.
+
 A method whose name or parameters do not fit is refused when the repository is
 created, that is when the container builds, with the interface, the method and
 the reason in the message.
+
+Reading, deserializing, mapping and validating run on the caller's thread,
+which is usually the main thread: only writing to disk is moved off it. Keep
+queries over large repositories out of the frame loop.
 
 For anything else (ranges, sorting, joins) write an ordinary service that takes
 the repository.
@@ -295,6 +325,11 @@ internal sealed class WalletCoinsToBalance : IMigration
 Keep the old record class in the code for as long as saves of that shape can
 exist.
 
+Write migrations so that running one twice does no harm (check the old shape
+before converting, as above). If the file holding the migration record is
+damaged, the store reads its backup, which may hold an older number; the
+migrations after it then run again, and a warning says so.
+
 ## Where documents live
 
 | Repository | Area | Name |
@@ -349,6 +384,9 @@ default root is `Application.persistentDataPath/Saves`.
 - **Saving what the disk takes.** Only while closing, a step the disk keeps
   refusing is left out (and logged) so the steps after it are still saved:
   losing every save for one refused file is worse than breaking the order once.
+  A transaction whose journal is already written is never left half-way: it is
+  completed the next time the store opens. What was left out is counted in
+  `LostChanges`, and `WaitForDisk` and `IsIdle` then report false.
 - `WaitForDisk(timeout)` and `IsIdle` tell whether the changes made so far are
   on disk, for tests and tools.
 
@@ -358,6 +396,11 @@ journals in `<root>/.journal`. Areas are segments of letters, digits, `-` and
 
 Transactions of different flows do not merge: when two flows write the same
 document, the later commit wins.
+
+Nested transactions join the outer one, as Spring's `REQUIRED`. A rollback
+inside marks the whole transaction rollback-only: the outermost commit then
+saves nothing and throws, so a failure caught half-way cannot leave half the
+writes saved.
 
 ### New game
 
@@ -385,7 +428,7 @@ internal sealed class NewGame : INewGame
 - Inside an open transaction of the calling flow `DeleteAll` throws and changes
   nothing. Open transactions of other flows are dropped: they belong to the old
   game, and what their flows write until they end is lost.
-- A write another thread makes while the clear runs is kept.
+- A write another thread makes after the clear began is kept.
 
 ### InMemoryDocumentStore
 
@@ -418,9 +461,64 @@ public void A_Bought_Car_Belongs_To_The_Buyer()
 `new` runs without `[Transactional]` advice; use `data.Transactions.Run(...)`
 to test transactional behaviour.
 
+## Catalogs
+
+Game data that ships with the game and is never written (shop items, part
+tables, liveries) is a catalog: one text asset per item in a `Resources`
+folder, the asset's name its id.
+
+```csharp
+[Catalog("Shop/Items")]
+public interface IShopCatalog : ICatalog<ShopItem>
+{
+    IReadOnlyList<ShopItem> FindByCategory(string category);
+    int CountByCategory(string category);
+}
+```
+
+`ICatalog<T>` gives `Find`, `Exists`, `All` and `Ids`; query methods work as in
+a repository, but there is no `DeleteBy`. Items go through the serializer, the
+type's mapper and its validators once, when the container starts. A broken item
+is a bug in the game's data: it stops the start and the error names the asset.
+Catalogs are implemented by run-time proxies: Mono only.
+
+## Settings
+
+A settings class is bound to a resource, as Spring's
+`@ConfigurationProperties`:
+
+```csharp
+[Serializable]
+[ConfigurationProperties("Config/Driving")]
+public sealed class DrivingSettings
+{
+    public float grip = 1f;
+    public int gears = 5;
+}
+
+[Service]
+internal sealed class Steering : ISteering
+{
+    public Steering(DrivingSettings settings) { ... }
+}
+```
+
+- A plain class is read from the text asset at the path through the serializer.
+  A class that derives from `ScriptableObject` is loaded as that asset, so it
+  can be edited in the inspector.
+- A missing resource gives the class's defaults; `Required = true` makes it
+  stop the start instead.
+- `IDocumentValidator<T>` checks the settings; invalid settings stop the start.
+- An instance registered with `RegisterInstance` wins over the resource (tests,
+  overrides).
+
+Catalogs and settings read Unity's `Resources` unless an `IResourceSource`
+bean is registered (Addressables, files, a test double).
+`DocumentData.Catalog<T>(source)` builds either without a container, for tests.
+
 ## Extending the container
 
-Repositories are handed out through `IContractProvider`, a DI extension point:
+Repositories, catalogs and settings are handed out through `IContractProvider`, a DI extension point:
 a bean that implements it supplies beans for contracts no scanned class
 implements. The container asks providers only when a contract has no bean and
 no registered instance, creates each provided bean once, and disposes it with

@@ -79,10 +79,21 @@ failure of the following commit, rollback or dispose is attached to it in
 `Exception.Data` (`UniSpring.Scope.CompletionFailure`,
 `UniSpring.Scope.DisposeFailure`; `UniSpring.Transaction.*` for `Run`).
 
+Nested transactions join the outer one (Spring's `REQUIRED`). With the
+package's stores, a rollback inside marks the whole transaction rollback-only:
+the outermost commit then saves nothing and throws `InvalidOperationException`,
+even if the code around the inner call caught its exception. Work held for
+after the commit (`[AfterCommit]` listeners,
+`TransactionSynchronization.AfterCommit`) is dropped with it. Your own
+`ITransactionManager` should follow the same rule.
+
 For asynchronous work, transaction completion may run outside the captured
 Unity synchronization context. `ConfigureAwait(false)` does not guarantee a
 particular thread. Commit, rollback and dispose must not assume Unity's main
 thread; explicitly marshal engine-specific work if needed.
+
+To react to saved state only, mark an event listener `[AfterCommit]`; see
+[Lifecycle, events and ticks](lifecycle-events-ticks.md#after-the-commit).
 
 For a complete, runnable example of the manager and transaction interfaces,
 see [the counter store walkthrough](transaction-store-example.md), including

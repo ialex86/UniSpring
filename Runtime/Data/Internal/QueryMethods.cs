@@ -30,31 +30,56 @@ namespace UniSpring.Data.Internal
 
         public static Func<object[], object> Build(MethodInfo method, DocumentAccess access, string area)
         {
-            var domain = access.DomainType;
-            for (var index = 0; index < Verbs.Length; index++)
-            {
-                if (!method.Name.StartsWith(Verbs[index].Key, StringComparison.Ordinal))
-                    continue;
-
-                var members = ResolveMembers(method, method.Name.Substring(Verbs[index].Key.Length), domain);
-                RequireParameters(method, members);
-                var shape = Verbs[index].Value(method, domain);
-                return arguments => shape(domain, Matches(access, area, members, arguments), id => access.Delete(area, id));
-            }
-
-            throw Refused(method, "its name must start with FindBy, CountBy, ExistsBy or DeleteBy");
+            return Build(method, access.DomainType, () => Stored(access, area), id => access.Delete(area, id));
         }
 
-        private static List<KeyValuePair<string, object>> Matches(
-            DocumentAccess access, string area, List<Member> members, object[] arguments)
+        /// <summary>The stored objects one by one: a query that stops early loads no more than it needs.</summary>
+        private static IEnumerable<KeyValuePair<string, object>> Stored(DocumentAccess access, string area)
         {
-            var result = new List<KeyValuePair<string, object>>();
             var ids = access.Names(area);
             for (var index = 0; index < ids.Count; index++)
             {
                 var value = access.Load(area, ids[index]);
-                if (value != null && IsMatch(value, members, arguments))
-                    result.Add(new KeyValuePair<string, object>(ids[index], value));
+                if (value != null)
+                    yield return new KeyValuePair<string, object>(ids[index], value);
+            }
+        }
+
+        /// <param name="all">Every object with its id.</param>
+        /// <param name="delete">Deletes by id; null for a read-only source, which then refuses DeleteBy.</param>
+        public static Func<object[], object> Build(
+            MethodInfo method, Type domain, Func<IEnumerable<KeyValuePair<string, object>>> all, Action<string> delete)
+        {
+            for (var index = 0; index < Verbs.Length; index++)
+            {
+                if (!method.Name.StartsWith(Verbs[index].Key, StringComparison.Ordinal))
+                    continue;
+                if (delete == null && Verbs[index].Key == "DeleteBy")
+                    throw Refused(method, "the source is read-only");
+
+                var members = ResolveMembers(method, method.Name.Substring(Verbs[index].Key.Length), domain);
+                RequireParameters(method, members);
+                var shape = Verbs[index].Value(method, domain);
+                var first = Verbs[index].Key == "ExistsBy" || (Verbs[index].Key == "FindBy" && method.ReturnType == domain);
+                var limit = first ? 1 : int.MaxValue;
+                return arguments => shape(domain, Matches(all(), members, arguments, limit), delete);
+            }
+
+            throw Refused(method, "its name must start with FindBy, CountBy, ExistsBy" + (delete == null ? "" : " or DeleteBy"));
+        }
+
+        /// <summary>The matches in id order, stopping after <paramref name="limit"/> of them.</summary>
+        private static List<KeyValuePair<string, object>> Matches(
+            IEnumerable<KeyValuePair<string, object>> all, List<Member> members, object[] arguments, int limit)
+        {
+            var result = new List<KeyValuePair<string, object>>();
+            foreach (var entry in all)
+            {
+                if (!IsMatch(entry.Value, members, arguments))
+                    continue;
+                result.Add(entry);
+                if (result.Count >= limit)
+                    break;
             }
 
             return result;

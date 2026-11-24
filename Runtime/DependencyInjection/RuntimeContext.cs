@@ -29,6 +29,7 @@ namespace UniSpring.DependencyInjection
         private static Action<ApplicationContext> s_Configure;
         private static ModuleBoundaryOptions s_BoundaryOptions;
         private static Func<Assembly, bool> s_AssemblyFilter;
+        private static ISet<string> s_Profiles;
         // Scene path -> path of the scene whose scope it joins when it wakes.
         private static readonly Dictionary<string, string> s_Joins =
             new Dictionary<string, string>(StringComparer.Ordinal);
@@ -98,12 +99,23 @@ namespace UniSpring.DependencyInjection
             set => s_AssemblyFilter = value;
         }
 
+        /// <summary>
+        /// The profiles the container is built with (see <see cref="ProfileAttribute"/>); null, the default, means
+        /// <see cref="ContextOptions.DefaultProfiles"/>. Set it before the first access.
+        /// </summary>
+        public static ISet<string> Profiles
+        {
+            get => s_Profiles;
+            set => s_Profiles = value;
+        }
+
         /// <summary>Drops the configuration set by <see cref="Configure"/> (tests and tooling).</summary>
         public static void ClearConfiguration()
         {
             s_Configure = null;
             s_BoundaryOptions = null;
             s_AssemblyFilter = null;
+            s_Profiles = null;
         }
 
         /// <summary>
@@ -369,8 +381,7 @@ namespace UniSpring.DependencyInjection
             {
                 s_Context = ApplicationContext.Build(
                     GetComponentAssemblies(),
-                    s_BoundaryOptions,
-                    s_Configure);
+                    new ContextOptions { Boundaries = s_BoundaryOptions, Configure = s_Configure, Profiles = s_Profiles });
             }
             catch (Exception exception)
             {

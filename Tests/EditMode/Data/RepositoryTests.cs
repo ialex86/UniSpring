@@ -138,6 +138,68 @@ namespace UniSpring.Data.Tests
         }
 
         [Test]
+        public void A_Strict_Read_Tells_Missing_From_Broken_And_A_Save_Over_Broken_Data_Is_Refused()
+        {
+            var wallet = m_Data.Repository<IWalletDocument>();
+            Assert.AreEqual(LoadStatus.Missing, wallet.Read().Status);
+
+            m_Data.Store.Write("Documents", "Wallet", Encoding.UTF8.GetBytes("not json"));
+            var read = wallet.Read();
+
+            Assert.AreEqual(LoadStatus.Unreadable, read.Status);
+            Assert.IsTrue(read.IsBroken);
+            Assert.IsNull(read.Value);
+            Assert.Throws<DocumentDamagedException>(() => wallet.Save(new Wallet(1000)), "the player's save is not replaced");
+
+            wallet.Delete();
+            wallet.Save(new Wallet(1000));
+            Assert.AreEqual(LoadStatus.Found, wallet.Read().Status);
+            Assert.AreEqual(1000, wallet.Read().Value.Balance);
+        }
+
+        [Test]
+        public void A_Strict_Read_Reports_An_Invalid_Object()
+        {
+            m_Data.Store.Write("ParkedCar", "car-1", Encoding.UTF8.GetBytes("{\"owner\":\"\",\"model\":\"Coupe\",\"mileage\":1}"));
+
+            var read = m_Cars.Read("car-1");
+
+            Assert.AreEqual(LoadStatus.Invalid, read.Status);
+            StringAssert.Contains("no owner", read.Error);
+        }
+
+        [Test]
+        public void ExistsBy_And_A_Single_FindBy_Stop_At_The_First_Match()
+        {
+            var serializer = new CountingSerializer();
+            var data = DocumentData.InMemory(serializer).With(new ParkedCarMapper());
+            var cars = data.Repository<ICarRepository>();
+            for (var index = 0; index < 10; index++)
+                cars.Save("car-" + index, new ParkedCar("alex", "Coupe", index));
+            serializer.Reads = 0;
+
+            Assert.IsTrue(cars.ExistsByModel("Coupe"));
+            Assert.AreEqual(1, serializer.Reads, "ExistsBy");
+            serializer.Reads = 0;
+            Assert.IsNotNull(cars.FindByModel("Coupe"));
+            Assert.AreEqual(1, serializer.Reads, "a single FindBy");
+        }
+
+        private sealed class CountingSerializer : IDocumentSerializer
+        {
+            private readonly JsonTestSerializer m_Inner = new JsonTestSerializer();
+            public int Reads;
+
+            public byte[] Write(object record) => m_Inner.Write(record);
+
+            public object Read(Type recordType, byte[] bytes)
+            {
+                Reads++;
+                return m_Inner.Read(recordType, bytes);
+            }
+        }
+
+        [Test]
         public void A_Method_That_Cannot_Be_Implemented_Is_Refused_When_The_Repository_Is_Created()
         {
             StringAssert.Contains("Colour", Assert.Throws<InvalidOperationException>(
@@ -148,6 +210,31 @@ namespace UniSpring.Data.Tests
                 () => m_Data.Repository<IBadParameterRepository>()).Message);
             StringAssert.Contains("[Repository]", Assert.Throws<InvalidOperationException>(
                 () => m_Data.Repository<INotMarked>()).Message);
+        }
+
+        [Test]
+        public void A_Nested_Rollback_Makes_The_Outer_Commit_Throw_And_Save_Nothing()
+        {
+            var wallet = m_Data.Repository<IWalletDocument>();
+            var transactions = m_Data.Transactions;
+
+            Assert.Throws<InvalidOperationException>(() => transactions.Run(() =>
+            {
+                wallet.Save(new Wallet(10));
+                try
+                {
+                    transactions.Run(() => throw new ArgumentException("inner failure"), true);
+                }
+                catch (ArgumentException)
+                {
+                    // the outer code goes on, but the transaction is rollback-only now
+                }
+
+                m_Cars.Save("car-1", new ParkedCar("alex", "Coupe", 0));
+            }));
+
+            Assert.IsNull(wallet.Load());
+            Assert.IsFalse(m_Cars.Exists("car-1"));
         }
 
         [Test]

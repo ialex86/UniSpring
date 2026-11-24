@@ -4,6 +4,46 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `ILifecycle`: start and stop hooks for application beans; the container can
+  be injected as `ApplicationContext`.
+- `IEventPublisher` and `IEventListener<T>`: application events between beans,
+  with subscriptions for objects the container does not own, and
+  `[AfterCommit]` / `TransactionSynchronization.AfterCommit` for delivery after
+  the transaction commits.
+- `ITickable`, `ILateTickable`, `IFixedTickable` and `ITickRegistry`: beans
+  ticked by Unity's player loop in bean order, without MonoBehaviour hosts.
+- `[Profile]` and `ContextOptions`: beans chosen by active profiles
+  (`Editor`/`Player`, `Development`, `UNISPRING_PROFILES`).
+- `[Catalog]` interfaces over `ICatalog<T>`: read-only game data from
+  `Resources`, checked at start; `[ConfigurationProperties]` settings classes
+  from text assets or ScriptableObjects; `IResourceSource`.
+- Strict reads: `IDocument<T>.Read()` and `IRepository<T>.Read(id)` return
+  `LoadResult<T>` (Missing, Found, Damaged, Unreadable, Invalid); a save over a
+  document found broken throws `DocumentDamagedException`.
+- `FileDocumentStore.LostChanges`.
+
+### Changed
+
+- A rollback inside a joined transaction marks the whole transaction
+  rollback-only: the outermost commit saves nothing and throws.
+- `ExistsBy` and single-result `FindBy` stop at the first match.
+
+### Fixed
+
+- A retry after a refused journaled step could rewrite or delete the committed
+  journal; committed journals are now completed before anything new is
+  prepared, under step ids that are never reused.
+- `WaitForDisk` and `IsIdle` reported success after changes were left out on
+  close.
+- A new-game clear could delete a document written by another thread after the
+  clear began.
+- A migration record read from its backup now logs that migrations may run
+  again.
+
 ## [0.2.0] - 2026-11-24
 
 ### Added

@@ -78,6 +78,9 @@ namespace UniSpring.Data.Internal
             if (read.Status == DocumentStatus.Found &&
                 int.TryParse(Encoding.ASCII.GetString(read.Bytes), NumberStyles.None, CultureInfo.InvariantCulture, out version))
             {
+                if (read.FromBackup)
+                    GameLog.Warn("UniSpring Data: the migration record was damaged and its backup says " + version +
+                                 "; the migrations after it run again. Migrations must be safe to run twice.");
                 return version;
             }
 

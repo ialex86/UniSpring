@@ -33,11 +33,12 @@ namespace UniSpring.Transactions
             => targetMethod.IsDefined(typeof(TransactionalAttribute), true);
 
         protected override IDisposable Open(IMethodInvocation invocation)
-            => new Scope(
-                m_Transactions.Begin() ?? throw new InvalidOperationException(
-                    "ITransactionManager.Begin returned no transaction for " +
-                    invocation.TargetMethod.DeclaringType?.FullName + "." + invocation.TargetMethod.Name + "."),
-                RollbackOnError(invocation.TargetMethod));
+        {
+            var transaction = m_Transactions.Begin() ?? throw new InvalidOperationException(
+                "ITransactionManager.Begin returned no transaction for " +
+                invocation.TargetMethod.DeclaringType?.FullName + "." + invocation.TargetMethod.Name + ".");
+            return new Scope(transaction, RollbackOnError(invocation.TargetMethod), TransactionSynchronization.Enter());
+        }
 
         protected override void Complete(IDisposable scope, Exception error)
         {
@@ -57,12 +58,14 @@ namespace UniSpring.Transactions
         private sealed class Scope : IDisposable
         {
             private readonly ITransaction m_Transaction;
+            private readonly TransactionSynchronization.Boundary m_Boundary;
             private bool m_Finished;
 
-            public Scope(ITransaction transaction, bool rollbackOnError)
+            public Scope(ITransaction transaction, bool rollbackOnError, TransactionSynchronization.Boundary boundary)
             {
                 m_Transaction = transaction;
                 RollbackOnError = rollbackOnError;
+                m_Boundary = boundary;
             }
 
             public bool RollbackOnError { get; }
@@ -72,7 +75,15 @@ namespace UniSpring.Transactions
                 if (m_Finished)
                     return;
                 m_Finished = true;
-                m_Transaction.Commit();
+                try
+                {
+                    m_Transaction.Commit();
+                }
+                catch
+                {
+                    m_Boundary.RolledBack();
+                    throw;
+                }
             }
 
             public void Rollback()
@@ -80,12 +91,20 @@ namespace UniSpring.Transactions
                 if (m_Finished)
                     return;
                 m_Finished = true;
+                m_Boundary.RolledBack();
                 m_Transaction.Rollback();
             }
 
             public void Dispose()
             {
-                m_Transaction.Dispose();
+                try
+                {
+                    m_Transaction.Dispose();
+                }
+                finally
+                {
+                    m_Boundary.Dispose();
+                }
             }
         }
     }

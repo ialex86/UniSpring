@@ -58,6 +58,17 @@ namespace UniSpring.Data
             return (T)m_Factory.Create(typeof(T));
         }
 
+        /// <summary>
+        /// The object behind a <see cref="CatalogAttribute"/> interface, or a
+        /// <see cref="ConfigurationPropertiesAttribute"/> class, read from <paramref name="source"/>.
+        /// </summary>
+        public T Catalog<T>(IResourceSource source)
+            where T : class
+        {
+            var factory = new CatalogFactory(source, () => m_Serializer, m_Mappers, m_Validators);
+            return (T)factory.Create(typeof(T));
+        }
+
         /// <summary>Runs the migrations the store has not seen yet, as the container does at start.</summary>
         public void Migrate(params IMigration[] migrations)
             => MigrationEngine.Apply(Store, m_Serializer, migrations ?? Array.Empty<IMigration>());

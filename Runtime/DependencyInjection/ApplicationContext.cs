@@ -60,6 +60,10 @@ namespace UniSpring.DependencyInjection
 
         private bool m_Disposed;
 
+        /// <summary>Root only: the lifecycle beans started, in start order.</summary>
+        private readonly List<ILifecycle> m_Started = new List<ILifecycle>();
+        private IReadOnlyCollection<string> m_Profiles = Array.Empty<string>();
+
         /// <summary>Root only: set when warm-up begins (see <see cref="AdviseRegistered"/>).</summary>
         private bool m_WarmUpStarted;
 
@@ -84,6 +88,9 @@ namespace UniSpring.DependencyInjection
         }
 
         public BeanLifetime Lifetime { get; }
+
+        /// <summary>The profiles the container was built with (see <see cref="ProfileAttribute"/>).</summary>
+        public IReadOnlyCollection<string> Profiles => RootContext().m_Profiles;
 
         public ApplicationContext Parent => m_Parent;
 
@@ -125,10 +132,7 @@ namespace UniSpring.DependencyInjection
             ModuleBoundaryOptions boundaryOptions,
             Action<ApplicationContext> configureBeforeWarmUp)
         {
-            return BuildFromDefinitions(
-                ComponentScanner.Scan(assemblies),
-                boundaryOptions,
-                configureBeforeWarmUp);
+            return Build(assemblies, new ContextOptions { Boundaries = boundaryOptions, Configure = configureBeforeWarmUp });
         }
 
         /// <summary>
@@ -161,10 +165,25 @@ namespace UniSpring.DependencyInjection
             ModuleBoundaryOptions boundaryOptions,
             Action<ApplicationContext> configureBeforeWarmUp)
         {
+            return Build(componentTypes, new ContextOptions { Boundaries = boundaryOptions, Configure = configureBeforeWarmUp });
+        }
+
+        /// <summary>Builds a container from the scanned assemblies with the given options.</summary>
+        public static ApplicationContext Build(IEnumerable<Assembly> assemblies, ContextOptions options)
+        {
+            options = options ?? new ContextOptions();
+            var profiles = options.Profiles ?? ContextOptions.DefaultProfiles();
             return BuildFromDefinitions(
-                ComponentScanner.Scan(componentTypes),
-                boundaryOptions,
-                configureBeforeWarmUp);
+                ComponentScanner.Scan(assemblies, profiles), options.Boundaries, options.Configure, profiles);
+        }
+
+        /// <summary>Builds a container from an explicit set of component types with the given options.</summary>
+        public static ApplicationContext Build(IEnumerable<Type> componentTypes, ContextOptions options)
+        {
+            options = options ?? new ContextOptions();
+            var profiles = options.Profiles ?? ContextOptions.DefaultProfiles();
+            return BuildFromDefinitions(
+                ComponentScanner.Scan(componentTypes, profiles), options.Boundaries, options.Configure, profiles);
         }
 
         /// <summary>Builds a container from an explicit set of component types (focused tests).</summary>
@@ -172,10 +191,7 @@ namespace UniSpring.DependencyInjection
             IEnumerable<Type> componentTypes,
             Action<ApplicationContext> configureBeforeWarmUp = null)
         {
-            return BuildFromDefinitions(
-                ComponentScanner.Scan(componentTypes),
-                null,
-                configureBeforeWarmUp);
+            return Build(componentTypes, new ContextOptions { Configure = configureBeforeWarmUp });
         }
 
         /// <summary>
@@ -186,17 +202,20 @@ namespace UniSpring.DependencyInjection
         private static ApplicationContext BuildFromDefinitions(
             List<BeanDefinition> definitions,
             ModuleBoundaryOptions boundaryOptions,
-            Action<ApplicationContext> configureBeforeWarmUp)
+            Action<ApplicationContext> configureBeforeWarmUp,
+            ICollection<string> profiles)
         {
             var context = new ApplicationContext(
                 new BeanDefinitionIndex(definitions, boundaryOptions),
                 BeanLifetime.Application,
                 null,
                 Thread.CurrentThread.ManagedThreadId);
+            context.m_Profiles = new List<string>(profiles);
             try
             {
                 configureBeforeWarmUp?.Invoke(context);
                 context.WarmUp();
+                context.StartLifecycle();
                 return context;
             }
             catch (Exception primary)
@@ -333,6 +352,9 @@ namespace UniSpring.DependencyInjection
 
         private object GetCore(Type contract)
         {
+            if (contract == typeof(ApplicationContext))
+                return this;
+
             object registered;
             if (TryGetRegisteredInstance(contract, out registered))
                 return AdviseRegistered(registered, contract);
@@ -413,8 +435,8 @@ namespace UniSpring.DependencyInjection
             if (m_Disposed)
                 return;
 
+            Exception disposeFailure = StopLifecycle();
             m_Disposed = true;
-            Exception disposeFailure = null;
 
             var children = m_Children.ToArray();
             for (var index = children.Length - 1; index >= 0; index--)
@@ -460,6 +482,74 @@ namespace UniSpring.DependencyInjection
                     Lifetime + " scope.",
                     disposeFailure);
             }
+        }
+
+        /// <summary>Root only: starts the lifecycle beans in bean order once every application bean exists.</summary>
+        private void StartLifecycle()
+        {
+            var beans = GetAllInScope(typeof(ILifecycle));
+            for (var index = 0; index < beans.Count; index++)
+            {
+                var bean = (ILifecycle)beans[index];
+                bean.Start();
+                m_Started.Add(bean);
+            }
+        }
+
+        /// <summary>Stops the started lifecycle beans in reverse order; the first failure is returned, not thrown.</summary>
+        private Exception StopLifecycle()
+        {
+            Exception failure = null;
+            for (var index = m_Started.Count - 1; index >= 0; index--)
+            {
+                try
+                {
+                    m_Started[index].Stop();
+                }
+                catch (Exception exception)
+                {
+                    if (failure == null)
+                        failure = exception;
+                }
+            }
+
+            m_Started.Clear();
+            return failure;
+        }
+
+        /// <summary>
+        /// Every bean assignable to <paramref name="contract"/> that this scope can resolve, in bean order (registered
+        /// instances first). Unlike <see cref="GetAll{T}"/> it skips beans of a scope this one is not inside (a Scene
+        /// bean seen from the root): for infrastructure that collects beans by role, such as listeners and tickables.
+        /// </summary>
+        internal IReadOnlyList<object> GetAllInScope(Type contract)
+        {
+            AssertOwningThread();
+            ThrowIfDisposed();
+
+            var result = new List<object>();
+            var seen = new List<object>();
+            for (var current = this; current != null; current = current.m_Parent)
+            {
+                foreach (var registered in current.m_RegisteredInstances.Values)
+                {
+                    if (!contract.IsInstanceOfType(registered) || seen.Contains(registered))
+                        continue;
+                    seen.Add(registered);
+                    result.Add(registered);
+                }
+            }
+
+            var candidates = FindCandidates(contract);
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                var candidate = candidates[index];
+                if (candidate.Lifetime != BeanLifetime.Transient && FindScopeOwner(candidate.Lifetime) == null)
+                    continue;
+                result.Add(Resolve(candidate));
+            }
+
+            return result;
         }
 
         private void WarmUp()

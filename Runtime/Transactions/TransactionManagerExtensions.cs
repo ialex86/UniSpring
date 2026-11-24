@@ -24,6 +24,7 @@ namespace UniSpring.Transactions
             }
 
             var transaction = Begin(transactions);
+            var boundary = TransactionSynchronization.Enter();
             Exception primary = null;
             try
             {
@@ -33,11 +34,13 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
+                    if (rollbackOnError)
+                        boundary.RolledBack();
                     FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
-                transaction.Commit();
+                CommitOrDrop(transaction, boundary);
             }
             catch (Exception exception)
             {
@@ -47,6 +50,7 @@ namespace UniSpring.Transactions
             finally
             {
                 DisposeAfterCall(transaction, primary);
+                boundary.Dispose();
             }
         }
 
@@ -61,6 +65,7 @@ namespace UniSpring.Transactions
             }
 
             var transaction = Begin(transactions);
+            var boundary = TransactionSynchronization.Enter();
             Exception primary = null;
             try
             {
@@ -71,11 +76,13 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
+                    if (rollbackOnError)
+                        boundary.RolledBack();
                     FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
-                transaction.Commit();
+                CommitOrDrop(transaction, boundary);
                 return result;
             }
             catch (Exception exception)
@@ -86,6 +93,7 @@ namespace UniSpring.Transactions
             finally
             {
                 DisposeAfterCall(transaction, primary);
+                boundary.Dispose();
             }
         }
 
@@ -101,6 +109,7 @@ namespace UniSpring.Transactions
                 throw new ArgumentNullException(nameof(work));
 
             var transaction = Begin(transactions);
+            var boundary = TransactionSynchronization.Enter();
             Exception primary = null;
             try
             {
@@ -111,11 +120,13 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
+                    if (rollbackOnError)
+                        boundary.RolledBack();
                     FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
-                transaction.Commit();
+                CommitOrDrop(transaction, boundary);
             }
             catch (Exception exception)
             {
@@ -125,6 +136,7 @@ namespace UniSpring.Transactions
             finally
             {
                 DisposeAfterCall(transaction, primary);
+                boundary.Dispose();
             }
         }
 
@@ -136,6 +148,7 @@ namespace UniSpring.Transactions
                 throw new ArgumentNullException(nameof(work));
 
             var transaction = Begin(transactions);
+            var boundary = TransactionSynchronization.Enter();
             Exception primary = null;
             try
             {
@@ -147,11 +160,13 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
+                    if (rollbackOnError)
+                        boundary.RolledBack();
                     FinishAfterFailure(transaction, rollbackOnError, exception);
                     throw;
                 }
 
-                transaction.Commit();
+                CommitOrDrop(transaction, boundary);
                 return result;
             }
             catch (Exception exception)
@@ -162,6 +177,7 @@ namespace UniSpring.Transactions
             finally
             {
                 DisposeAfterCall(transaction, primary);
+                boundary.Dispose();
             }
         }
 
@@ -186,6 +202,20 @@ namespace UniSpring.Transactions
             catch (Exception cleanup)
             {
                 primary.Data["UniSpring.Transaction.CompletionFailure"] = cleanup.ToString();
+            }
+        }
+
+        /// <summary>A commit that throws (a rollback-only transaction) drops the work held for after the commit.</summary>
+        private static void CommitOrDrop(ITransaction transaction, TransactionSynchronization.Boundary boundary)
+        {
+            try
+            {
+                transaction.Commit();
+            }
+            catch
+            {
+                boundary.RolledBack();
+                throw;
             }
         }
 

@@ -35,6 +35,9 @@ namespace UniSpring.Data
     {
         public static readonly TimeSpan DefaultCloseTimeout = TimeSpan.FromSeconds(5);
 
+        internal const string RollbackOnlyMessage =
+            "The transaction was rolled back inside (a joined transaction asked for it); nothing it wrote is saved.";
+
         private sealed class Transaction
         {
             // A null value is a pending delete.
@@ -43,6 +46,9 @@ namespace UniSpring.Data
 
             /// <summary>Dropped by a new-game clear: what its flow writes until it ends is lost.</summary>
             public bool Dropped;
+
+            /// <summary>A rollback happened inside: the outermost commit saves nothing and throws.</summary>
+            public bool RollbackOnly;
         }
 
         private sealed class Step
@@ -67,6 +73,13 @@ namespace UniSpring.Data
         private readonly ClearListeners m_ClearListeners = new ClearListeners();
         private readonly Thread m_Thread;
         private long m_LastSequence;
+        private long m_StepIds;
+
+        // Document changes left out of the disk in this session (refused while closing); never on disk.
+        private int m_Lost;
+
+        // The sequence of the last write of every document, so a clear never deletes a later write.
+        private readonly Dictionary<(string, string), long> m_LastWrite = new Dictionary<(string, string), long>();
 
         // A committed step the disk refused to finish: its journal waits on disk, through this sequence.
         private bool m_Stranded;
@@ -185,19 +198,36 @@ namespace UniSpring.Data
 
         // ---------------------------------------------------------------- the disk
 
-        /// <summary>True when every change made so far is on disk (open transactions do not count).</summary>
+        /// <summary>
+        /// True when every change made so far is on disk (open transactions do not count). False for the rest of the
+        /// session once a change was left out (see <see cref="LostChanges"/>).
+        /// </summary>
         public bool IsIdle
         {
             get
             {
                 lock (m_Gate)
-                    return m_Landed >= m_LastSequence;
+                    return m_Landed >= m_LastSequence && m_Lost == 0;
+            }
+        }
+
+        /// <summary>
+        /// Document changes left out of the disk in this session: refused while the store closed, or held by a
+        /// journal that is only completed the next time the store opens.
+        /// </summary>
+        public int LostChanges
+        {
+            get
+            {
+                lock (m_Gate)
+                    return m_Lost;
             }
         }
 
         /// <summary>
         /// Waits until every change made before the call is on disk. False when <paramref name="timeout"/> passed
-        /// first (the disk refuses or is slow; the changes still wait and are tried again).
+        /// first (the disk refuses or is slow; the changes still wait and are tried again), and false when a change
+        /// was left out (see <see cref="LostChanges"/>): it is not on disk.
         /// </summary>
         public bool WaitForDisk(TimeSpan timeout)
         {
@@ -219,7 +249,7 @@ namespace UniSpring.Data
                     Monitor.Wait(m_Gate, left);
                 }
 
-                return true;
+                return m_Lost == 0;
             }
         }
 
@@ -285,19 +315,33 @@ namespace UniSpring.Data
 
             try
             {
+                long began;
                 lock (m_Gate)
+                {
                     DropOtherTransactions();
+                    began = m_LastSequence;
+                }
 
-                var deletes = new List<KeyValuePair<(string, string), byte[]>>();
+                var candidates = new List<(string, string)>();
                 foreach (var area in AllAreas())
                 {
                     foreach (var name in Names(area))
-                        deletes.Add(new KeyValuePair<(string, string), byte[]>((area, name), null));
+                        candidates.Add((area, name));
                 }
 
                 bool closed;
+                var deletes = new List<KeyValuePair<(string, string), byte[]>>();
                 lock (m_Gate)
                 {
+                    // A document another thread wrote after the clear began belongs to the new game: it stays.
+                    foreach (var key in candidates)
+                    {
+                        long written;
+                        if (m_LastWrite.TryGetValue(key, out written) && written > began)
+                            continue;
+                        deletes.Add(new KeyValuePair<(string, string), byte[]>(key, null));
+                    }
+
                     if (deletes.Count > 0)
                         Enqueue(deletes);
                     closed = m_Closed;
@@ -404,6 +448,8 @@ namespace UniSpring.Data
                 var document = new DocumentChange(change.Key.Item1, change.Key.Item2, change.Value, step.Sequence);
                 step.Changes.Add(document);
                 m_Waiting[change.Key] = document;
+                if (change.Value != null)
+                    m_LastWrite[change.Key] = step.Sequence;
             }
 
             m_Queue.Add(step);
@@ -415,7 +461,15 @@ namespace UniSpring.Data
             bool closed;
             lock (m_Gate)
             {
-                if (transaction.Closed || transaction.Staged.Count == 0)
+                if (transaction.Closed)
+                    return;
+                if (transaction.RollbackOnly)
+                {
+                    transaction.Staged.Clear();
+                    throw new InvalidOperationException(RollbackOnlyMessage);
+                }
+
+                if (transaction.Staged.Count == 0)
                     return;
                 Enqueue(transaction.Staged);
                 transaction.Staged.Clear();
@@ -506,6 +560,7 @@ namespace UniSpring.Data
                 if (m_Queue.Count == 0)
                     return;
                 Forget(m_Queue[0], documents);
+                m_Lost += m_Queue[0].Changes.Count;
                 m_Queue.RemoveAt(0);
             }
 
@@ -520,6 +575,7 @@ namespace UniSpring.Data
             var covered = 0;
             foreach (var step in m_Queue)
             {
+                m_Lost += step.Changes.Count;
                 if (step.Sequence <= m_StrandedThrough)
                 {
                     covered += step.Changes.Count;
@@ -538,7 +594,10 @@ namespace UniSpring.Data
                               string.Join(", ", later));
         }
 
-        /// <summary>Under the gate: the step no longer waits; its documents read from the disk again.</summary>
+        /// <summary>
+        /// Under the gate: the step no longer waits and its documents read from the disk again. It is not on disk:
+        /// the caller counts it in <see cref="LostChanges"/>, so waits for the disk report it.
+        /// </summary>
         private void Forget(Step step, List<string> documents)
         {
             foreach (var change in step.Changes)
@@ -595,7 +654,7 @@ namespace UniSpring.Data
                 var last = steps[steps.Count - 1].Sequence;
                 try
                 {
-                    m_Files.Apply(merged, last);
+                    m_Files.Apply(merged, Interlocked.Increment(ref m_StepIds));
                 }
                 catch (Exception exception)
                 {
@@ -659,11 +718,17 @@ namespace UniSpring.Data
                     m_Store.CommitTransaction(m_Transaction);
             }
 
-            /// <summary>Drops what the whole transaction holds so far, whichever lease asks.</summary>
+            /// <summary>
+            /// Drops what the whole transaction holds and marks it rollback-only (Spring's REQUIRED): a rollback of a
+            /// joined lease makes the outermost commit save nothing and throw.
+            /// </summary>
             public void Rollback()
             {
                 lock (m_Store.m_Gate)
+                {
                     m_Transaction.Staged.Clear();
+                    m_Transaction.RollbackOnly = true;
+                }
             }
 
             public void Dispose()

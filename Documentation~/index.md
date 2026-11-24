@@ -5,8 +5,9 @@ transactions and a structured logging facade for Unity, inspired by the Spring
 Framework.
 
 - [Dependency injection](dependency-injection.md)
+- [Lifecycle, events and ticks](lifecycle-events-ticks.md): start and stop hooks, events, the frame loop, profiles
 - [Transactions](transactions.md)
-- [Data](data.md): repositories, mappers, validators and migrations for saves
+- [Data](data.md): repositories, catalogs, settings, mappers, validators and migrations
 - [Worked example: a minimal transaction store](transaction-store-example.md)
 - [Logging](logging.md)
 - [Configuration](configuration.md)

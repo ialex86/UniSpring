@@ -83,6 +83,7 @@ namespace UniSpring.Data.Internal
             const string area = DocumentAccess.SingleArea;
             var name = access.DomainType.Name;
             handlers.Add(kind.GetMethod(nameof(IDocument<object>.Load)), arguments => access.Load(area, name));
+            handlers.Add(kind.GetMethod(nameof(IDocument<object>.Read)), arguments => access.ReadResult(area, name));
             handlers.Add(kind.GetMethod(nameof(IDocument<object>.Exists)), arguments => access.Exists(area, name));
             handlers.Add(kind.GetMethod(nameof(IDocument<object>.Save)), arguments =>
             {
@@ -100,6 +101,7 @@ namespace UniSpring.Data.Internal
             Dictionary<MethodInfo, Func<object[], object>> handlers, Type kind, DocumentAccess access, string area)
         {
             handlers.Add(kind.GetMethod(nameof(IRepository<object>.Find)), arguments => access.Load(area, (string)arguments[0]));
+            handlers.Add(kind.GetMethod(nameof(IRepository<object>.Read)), arguments => access.ReadResult(area, (string)arguments[0]));
             handlers.Add(kind.GetMethod(nameof(IRepository<object>.Exists)), arguments => access.Exists(area, (string)arguments[0]));
             handlers.Add(kind.GetMethod(nameof(IRepository<object>.Save)), arguments =>
             {

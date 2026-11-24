@@ -19,6 +19,9 @@ namespace UniSpring.Data.Internal
         private readonly RecordMapping m_Mapping;
         private readonly DocumentValidation[] m_Validations;
 
+        // Documents a read found broken: a save over them is refused until they are deleted.
+        private readonly HashSet<string> m_Broken = new HashSet<string>(StringComparer.Ordinal);
+
         public DocumentAccess(
             Type domainType,
             IDocumentStore store,
@@ -42,13 +45,23 @@ namespace UniSpring.Data.Internal
 
         public IReadOnlyList<string> Names(string area) => m_Store.Names(area);
 
-        public void Delete(string area, string name) => m_Store.Delete(area, RequireName(name));
+        public void Delete(string area, string name)
+        {
+            m_Store.Delete(area, RequireName(name));
+            lock (m_Broken)
+                m_Broken.Remove(area + "/" + name);
+        }
 
         public void Save(string area, string name, object value)
         {
             RequireName(name);
             if (value == null)
                 throw new ArgumentNullException(nameof(value), Describe(area, name) + ": there is nothing to save.");
+            lock (m_Broken)
+            {
+                if (m_Broken.Contains(area + "/" + name))
+                    throw new DocumentDamagedException(Describe(area, name));
+            }
 
             var errors = Validate(name, value);
             if (errors.Count > 0)
@@ -63,43 +76,89 @@ namespace UniSpring.Data.Internal
             m_Store.Write(area, name, bytes);
         }
 
+        /// <summary>The lenient read: a broken document is logged and read as missing.</summary>
         public object Load(string area, string name)
         {
-            var read = m_Store.Read(area, RequireName(name));
-            if (read.Status == DocumentStatus.Missing)
-                return null;
-            if (read.Status == DocumentStatus.Damaged)
-            {
-                GameLog.Error(Describe(area, name) + " is damaged and is read as missing: " + read.Error);
-                return null;
-            }
-
-            object value;
-            try
-            {
-                var record = m_Serializer.Read(RecordType, read.Bytes);
-                value = record != null && m_Mapping != null ? m_Mapping.ToDomain(record) : record;
-            }
-            catch (Exception exception)
-            {
+            LoadStatus status;
+            string error;
+            Exception exception;
+            var value = Read(area, name, out status, out error, out exception);
+            if (status == LoadStatus.Found || status == LoadStatus.Missing)
+                return value;
+            if (exception != null)
                 GameLog.Error(Describe(area, name) + " could not be read and is read as missing.", exception);
-                return null;
-            }
+            else
+                GameLog.Error(Describe(area, name) + " is " + status.ToString().ToLowerInvariant() + " and is read as missing: " + error);
+            return null;
+        }
 
-            if (value == null)
+        /// <summary>
+        /// The strict read: the object with what was found. A broken document is remembered, so a later save over it
+        /// is refused (<see cref="DocumentDamagedException"/>) until it is deleted.
+        /// </summary>
+        public object Read(string area, string name, out LoadStatus status, out string error, out Exception exception)
+        {
+            exception = null;
+            error = null;
+            var read = m_Store.Read(area, RequireName(name));
+            object value = null;
+            if (read.Status == DocumentStatus.Missing)
             {
-                GameLog.Error(Describe(area, name) + " holds no object and is read as missing.");
-                return null;
+                status = LoadStatus.Missing;
             }
-
-            var errors = Validate(name, value);
-            if (errors.Count > 0)
+            else if (read.Status == DocumentStatus.Damaged)
             {
-                GameLog.Error(Describe(area, name) + " is invalid and is read as missing: " + errors);
-                return null;
+                status = LoadStatus.Damaged;
+                error = read.Error;
+            }
+            else
+            {
+                try
+                {
+                    var record = m_Serializer.Read(RecordType, read.Bytes);
+                    value = record != null && m_Mapping != null ? m_Mapping.ToDomain(record) : record;
+                    status = value != null ? LoadStatus.Found : LoadStatus.Unreadable;
+                    if (value == null)
+                        error = "it holds no object";
+                }
+                catch (Exception failure)
+                {
+                    status = LoadStatus.Unreadable;
+                    error = failure.Message;
+                    exception = failure;
+                }
+
+                if (status == LoadStatus.Found)
+                {
+                    var errors = Validate(name, value);
+                    if (errors.Count > 0)
+                    {
+                        status = LoadStatus.Invalid;
+                        error = errors.ToString();
+                        value = null;
+                    }
+                }
             }
 
-            return value;
+            lock (m_Broken)
+            {
+                if (status == LoadStatus.Found || status == LoadStatus.Missing)
+                    m_Broken.Remove(area + "/" + name);
+                else
+                    m_Broken.Add(area + "/" + name);
+            }
+
+            return status == LoadStatus.Found ? value : null;
+        }
+
+        /// <summary>The strict read as the typed result an interface method returns.</summary>
+        public object ReadResult(string area, string name)
+        {
+            LoadStatus status;
+            string error;
+            Exception exception;
+            var value = Read(area, name, out status, out error, out exception);
+            return Activator.CreateInstance(typeof(LoadResult<>).MakeGenericType(DomainType), status, value, error);
         }
 
         private ValidationErrors Validate(string name, object value)

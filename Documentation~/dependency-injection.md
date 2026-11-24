@@ -296,7 +296,16 @@ For a fully controlled composition root use `ApplicationContext.Build`:
 
 ```csharp
 var context = ApplicationContext.Build(new[] { typeof(GameRoot).Assembly });
+
+var tests = ApplicationContext.Build(new[] { typeof(GameRoot).Assembly }, new ContextOptions
+{
+    Profiles = new HashSet<string> { "Test" },
+    Configure = scope => scope.RegisterInstance<IClock>(new FixedClock())
+});
 ```
+
+Start and stop hooks, events between beans, the frame loop and profiles are
+described in [Lifecycle, events and ticks](lifecycle-events-ticks.md).
 
 ## Module boundary policy
 

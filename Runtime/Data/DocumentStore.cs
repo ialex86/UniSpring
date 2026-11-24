@@ -21,16 +21,23 @@ namespace UniSpring.Data
         public readonly byte[] Bytes;
         public readonly string Error;
 
-        public DocumentRead(DocumentStatus status, byte[] bytes, string error)
+        /// <summary>The newest copy was damaged and the store read its backup: older content than last written.</summary>
+        public readonly bool FromBackup;
+
+        public DocumentRead(DocumentStatus status, byte[] bytes, string error, bool fromBackup = false)
         {
             Status = status;
             Bytes = bytes;
             Error = error ?? string.Empty;
+            FromBackup = fromBackup;
         }
 
         public static DocumentRead Missing => new DocumentRead(DocumentStatus.Missing, null, null);
 
         public static DocumentRead Found(byte[] bytes) => new DocumentRead(DocumentStatus.Found, bytes, null);
+
+        public static DocumentRead FoundInBackup(byte[] bytes, string error)
+            => new DocumentRead(DocumentStatus.Found, bytes, error, true);
 
         public static DocumentRead Damaged(string error) => new DocumentRead(DocumentStatus.Damaged, null, error);
     }

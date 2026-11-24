@@ -376,7 +376,9 @@ namespace UniSpring.Data.Tests
 
             store.Close(TimeSpan.FromMilliseconds(100));
 
-            Assert.IsTrue(store.IsIdle);
+            Assert.IsFalse(store.IsIdle, "a change left out is not on disk");
+            Assert.AreEqual(1, store.LostChanges);
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.Zero));
             var reopened = Open();
             Assert.AreEqual("40", Text(reopened.Read("Economy", "wallet")), "the wallet is saved without the car");
             Assert.AreEqual(DocumentStatus.Missing, reopened.Read("Garage", "car-1").Status);
@@ -396,6 +398,73 @@ namespace UniSpring.Data.Tests
             Assert.IsFalse(store.HasDocuments);
             Assert.AreEqual(1, told);
             Assert.AreEqual(DocumentStatus.Found, store.Read("UniSpring", "migrations").Status);
+        }
+
+        [Test]
+        public void A_Retry_Completes_The_Committed_Journal_Before_Anything_New_Is_Prepared()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var files = new FlakyFileSystem { FailReplaceOf = "Garage" };
+            var store = Open(files);
+            store.Run(() =>
+            {
+                store.Write("Economy", "wallet", Bytes("40"));
+                store.Write("Garage", "car-1", Bytes("coupe"));
+            });
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(100)), "committed, stuck on the car");
+
+            // The next attempt fails while preparing: the committed journal must survive it.
+            files.FailReplaceOf = null;
+            files.FailWritesOf = "Economy";
+            store.Write("Economy", "wallet", Bytes("50"));
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(100)));
+            store.Close(TimeSpan.FromMilliseconds(100));
+
+            var reopened = Open();
+            Assert.AreEqual("coupe", Text(reopened.Read("Garage", "car-1")), "the transaction is whole");
+            Assert.AreEqual("40", Text(reopened.Read("Economy", "wallet")), "the later write could not be prepared");
+        }
+
+        [Test]
+        public void A_Clear_Keeps_A_Document_Written_After_It_Began()
+        {
+            var files = new FlakyFileSystem();
+            var store = Open(files);
+            store.Write("Garage", "car-1", Bytes("old game"));
+            store.WaitForDisk(Wait);
+
+            // Another thread writes while the clear lists what to delete.
+            files.OnListing = () => store.Write("Garage", "car-1", Bytes("new game"));
+            store.DeleteAll();
+
+            Assert.AreEqual("new game", Text(store.Read("Garage", "car-1")));
+            Assert.IsTrue(store.WaitForDisk(Wait));
+            Assert.AreEqual("new game", Text(Reopen().Read("Garage", "car-1")));
+        }
+
+        [Test]
+        public void A_Nested_Rollback_Makes_The_Whole_Transaction_Save_Nothing()
+        {
+            var store = Open();
+
+            var error = Assert.Throws<InvalidOperationException>(() =>
+            {
+                using (var outer = store.Begin())
+                {
+                    store.Write("Game", "A", Bytes("a"));
+                    using (var inner = store.Begin())
+                    {
+                        store.Write("Game", "B", Bytes("b"));
+                        inner.Rollback();
+                    }
+
+                    store.Write("Game", "C", Bytes("c"));
+                    outer.Commit();
+                }
+            });
+
+            StringAssert.Contains("rolled back inside", error.Message);
+            Assert.IsEmpty(store.Names("Game"), "neither A, B nor C");
         }
 
         /// <summary>A disk that refuses some operations.</summary>
@@ -439,7 +508,15 @@ namespace UniSpring.Data.Tests
 
             public IReadOnlyList<string> Files(string directory, string pattern) => m_Inner.Files(directory, pattern);
 
-            public IReadOnlyList<string> FilesBelow(string directory, string pattern) => m_Inner.FilesBelow(directory, pattern);
+            /// <summary>Runs once, the next time a folder tree is listed.</summary>
+            public Action OnListing;
+
+            public IReadOnlyList<string> FilesBelow(string directory, string pattern)
+            {
+                var listing = Interlocked.Exchange(ref OnListing, null);
+                listing?.Invoke();
+                return m_Inner.FilesBelow(directory, pattern);
+            }
         }
     }
 }

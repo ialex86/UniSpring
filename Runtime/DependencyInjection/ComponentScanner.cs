@@ -8,7 +8,9 @@ namespace UniSpring.DependencyInjection
 {
     internal static class ComponentScanner
     {
-        public static List<BeanDefinition> Scan(IEnumerable<Assembly> assemblies)
+        public static List<BeanDefinition> Scan(IEnumerable<Assembly> assemblies) => Scan(assemblies, null);
+
+        public static List<BeanDefinition> Scan(IEnumerable<Assembly> assemblies, ICollection<string> profiles)
         {
             if (assemblies == null)
                 throw new ArgumentNullException(nameof(assemblies));
@@ -22,11 +24,14 @@ namespace UniSpring.DependencyInjection
             var types = new List<Type>();
             for (var assemblyIndex = 0; assemblyIndex < orderedAssemblies.Count; assemblyIndex++)
                 types.AddRange(GetLoadableTypes(orderedAssemblies[assemblyIndex]));
-            return Scan(types);
+            return Scan(types, profiles);
         }
 
         /// <summary>Scans an explicit set of types (used by focused tests).</summary>
-        public static List<BeanDefinition> Scan(IEnumerable<Type> candidateTypes)
+        public static List<BeanDefinition> Scan(IEnumerable<Type> candidateTypes) => Scan(candidateTypes, null);
+
+        /// <summary>Scans an explicit set of types; beans whose <see cref="ProfileAttribute"/> matches no active profile are left out.</summary>
+        public static List<BeanDefinition> Scan(IEnumerable<Type> candidateTypes, ICollection<string> profiles)
         {
             if (candidateTypes == null)
                 throw new ArgumentNullException(nameof(candidateTypes));
@@ -36,6 +41,10 @@ namespace UniSpring.DependencyInjection
                 foreach (var type in candidateTypes)
                 {
                     if (!IsComponent(type))
+                        continue;
+
+                    var profile = type.GetCustomAttribute<ProfileAttribute>(false);
+                    if (profile != null && profiles != null && !profile.IsActive(profiles))
                         continue;
 
                     if (typeof(UnityEngine.Object).IsAssignableFrom(type))

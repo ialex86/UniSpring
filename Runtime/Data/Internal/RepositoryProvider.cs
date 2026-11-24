@@ -4,6 +4,37 @@ using UniSpring.DependencyInjection;
 namespace UniSpring.Data.Internal
 {
     /// <summary>
+    /// Hands the container the catalogs (<see cref="CatalogAttribute"/>) and settings
+    /// (<see cref="ConfigurationPropertiesAttribute"/>) beans ask for. The serializer is asked for only when a
+    /// text asset has to be read; the resources come from the <see cref="IResourceSource"/> bean, or Unity's
+    /// <c>Resources</c> when there is none.
+    /// </summary>
+    [Component]
+    internal sealed class CatalogProvider : IContractProvider
+    {
+        private CatalogFactory m_Factory;
+
+        public bool Provides(Type contract) => CatalogFactory.IsCatalog(contract) || CatalogFactory.IsConfiguration(contract);
+
+        public object Create(Type contract, ApplicationContext context)
+        {
+            if (m_Factory == null)
+            {
+                var sources = context.GetAll<IResourceSource>();
+                if (sources.Count > 1)
+                    throw new InvalidOperationException("UniSpring Data: more than one IResourceSource bean.");
+                m_Factory = new CatalogFactory(
+                    sources.Count == 1 ? sources[0] : new ResourcesSource(),
+                    () => context.Get<IDocumentSerializer>(),
+                    context.GetAll<IRecordMapper>(),
+                    context.GetAll<IDocumentValidator>());
+            }
+
+            return m_Factory.Create(contract);
+        }
+    }
+
+    /// <summary>
     /// Hands the container the object behind every <see cref="RepositoryAttribute"/> interface a bean asks for.
     /// The store, the serializer, the mappers and the validators are taken from the container when the first
     /// repository is needed, so an application that declares no repository needs none of them.
