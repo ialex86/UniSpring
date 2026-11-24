@@ -204,8 +204,8 @@ The script creates a temporary host project, writes an absolute
 `TestResults/editmode.xml`.
 
 On CI the same steps are performed by `.github/workflows/tests.yml`, which uses
-`game-ci/unity-test-runner` and requires the `UNITY_LICENSE`, `UNITY_EMAIL`
-and `UNITY_PASSWORD` secrets.
+`game-ci/unity-test-runner` and requires the `UNITY_EMAIL` and
+`UNITY_PASSWORD` secrets (a Personal license needs nothing else).
 
 ## Code stripping
 

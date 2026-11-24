@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The test runner publishes a "Test Results" check run.
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   editmode:
     name: EditMode tests
@@ -43,7 +48,8 @@ jobs:
       - name: Run tests
         uses: game-ci/unity-test-runner@v4
         env:
-          # A Personal license needs all three; a Pro license uses UNITY_SERIAL instead of UNITY_LICENSE.
+          # Personal license: UNITY_EMAIL + UNITY_PASSWORD are enough. UNITY_LICENSE (a .ulf file) is an
+          # optional alternative; a Pro license adds UNITY_SERIAL.
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
