@@ -12,7 +12,9 @@ namespace UniSpring.DependencyInjection
     /// </summary>
     internal sealed class AopProxyFactory
     {
-        private static readonly MethodInfo s_CreateProxy = FindCreateProxy();
+        // Looked up on first use: a container without advised beans never needs it, and must still
+        // build where run-time proxies are unavailable (IL2CPP).
+        private static MethodInfo s_CreateProxy;
 
         private readonly Dictionary<Type, Dictionary<Type, IReadOnlyDictionary<MethodInfo, MethodAdvice>>> m_Plans =
             new Dictionary<Type, Dictionary<Type, IReadOnlyDictionary<MethodInfo, MethodAdvice>>>();
@@ -160,14 +162,16 @@ namespace UniSpring.DependencyInjection
             object proxy;
             try
             {
-                proxy = s_CreateProxy.MakeGenericMethod(contract, typeof(AopProxy)).Invoke(null, null);
+                var create = s_CreateProxy ?? (s_CreateProxy = FindCreateProxy());
+                proxy = create.MakeGenericMethod(contract, typeof(AopProxy)).Invoke(null, null);
             }
-            catch (TargetInvocationException exception)
+            catch (Exception exception)
             {
                 throw new InvalidOperationException(
                     "UniSpring DI could not make a proxy of " + instance.GetType().FullName + " as " + contract.FullName +
-                    " (run-time proxies need Reflection.Emit: Mono, not IL2CPP; the interface must be visible).",
-                    exception.InnerException ?? exception);
+                    " (run-time proxies need Reflection.Emit: Mono, not IL2CPP; the interface must be visible). " +
+                    "On IL2CPP use ITransactionManager.Run/RunAsync or another explicit call instead of advice.",
+                    (exception as TargetInvocationException)?.InnerException ?? exception);
             }
 
             ((AopProxy)proxy).Initialize(instance, plan);
