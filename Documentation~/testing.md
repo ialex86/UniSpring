@@ -2,7 +2,7 @@
 
 [Documentation index](index.md) · [Shop walkthrough](getting-started.md)
 
-A passing EditMode suite is useful evidence, not evidence that a Unity player build or a disk failure path works. The package's EditMode suite runs on Unity 6000.6.6f1. PlayerLoop installation, Play Mode shutdown and IL2CPP/linker behavior are not covered by it. The shop walkthrough's code is the Persistent Shop sample, which the package's CI compiles and tests.
+A passing EditMode suite is useful evidence, not evidence that a Unity player build or a disk failure path works. The package's EditMode suite runs on Unity 6000.6.6f1. Play Mode shutdown and IL2CPP player behavior are not covered by it; the macOS IL2CPP smoke test covers the latter for one target. The shop walkthrough's code is the Persistent Shop sample, which the package's CI compiles and tests.
 
 ## Test at the appropriate boundary
 
@@ -39,4 +39,4 @@ Tests~/run-tests.sh /path/to/Unity
 
 The script uses a temporary host project and writes `TestResults/editmode.xml`. In a consuming project, use Unity Test Runner for its own EditMode and PlayMode assemblies. Do not assume the package script runs PlayMode or builds a player. Report the commit, Unity version, target, scripting backend, stripping level, exact test command and pass/fail/skip counts separately.
 
-The [IL2CPP guide](il2cpp.md) lists proxy restrictions. A generated link.xml is not a successful AOT build; verify the actual target. For the tutorial's Mono-only repository/catalog paths, use a Mono test project.
+The [IL2CPP guide](il2cpp.md) lists proxy restrictions. EditMode tests compile and run the generated proxies in the editor, and `Tests~/il2cpp-smoke.sh` builds and runs a macOS IL2CPP player of the shop sample; other targets still need their own build.

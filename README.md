@@ -49,9 +49,12 @@ Application architecture for Unity: dependency injection, lifecycle, events, gam
 
 Requires Unity 6 (`6000.0` or newer). No third-party dependencies.
 
-**Platform status.** Unity 6 with Mono is the supported starting point. `[Transactional]`, custom runtime advice, `[Repository]` and `[Catalog]` use runtime proxies and are unavailable on IL2CPP. Explicit `ITransactionManager.Run(...)` / `RunAsync(...)` avoids transaction proxies, but does not replace generated repositories or catalogs. Linker preservation is generated; AOT compatibility of the remaining features is unverified. Build guidance is in
-[Documentation~/il2cpp.md](Documentation~/il2cpp.md). IL2CPP builds have not
-been tested yet.
+**Platform status.** Mono and IL2CPP. On Mono the proxies behind
+`[Transactional]`, interceptors, `[Repository]` and `[Catalog]` are made at run
+time; for IL2CPP the editor generates them as C# (`UniSpring.Generated.cs`,
+commit it) and `link.xml` is generated too. A macOS IL2CPP player with high
+stripping passes the package's smoke test; other IL2CPP targets have not been
+built yet. See [Documentation~/il2cpp.md](Documentation~/il2cpp.md).
 
 ## Install
 
@@ -126,13 +129,13 @@ This comparison concerns the standard APIs, without custom scanners, third-party
 | Application events | Custom / UnityEvent | Not part of DI | Custom / separate package | `IEventPublisher`, `IEventListener<T>` |
 | After-commit events | Custom | Not part of DI | Custom | `[AfterCommit]` (logical commit) |
 | Component profiles | Custom | Conditional registrations | Conditional registrations | `[Profile]`, `ContextOptions` |
-| Declarative repositories and derived queries | Custom | Not part of DI | Not part of DI | `[Repository]` (Mono) |
+| Declarative repositories and derived queries | Custom | Not part of DI | Not part of DI | `[Repository]` |
 | Save storage and migrations | Custom / PlayerPrefs | Not part of DI | Not part of DI | File / memory stores, `[Migration]` |
-| Read-only game content | Resources / custom | Not part of DI | Custom | `[Catalog]` (Mono) |
+| Read-only game content | Resources / custom | Not part of DI | Custom | `[Catalog]` |
 | Typed settings | ScriptableObject / custom | Options (separate infrastructure) | Explicit registration | `[ConfigurationProperties]` |
-| Method interception / declarative transactions | Custom | Not in the DI container | Not in the DI container | Built in (Mono only); use the Data store or a custom manager |
+| Method interception / declarative transactions | Custom | Not in the DI container | Not in the DI container | Built in (IL2CPP through generated proxies); use the Data store or a custom manager |
 | Logging facade and routing | Unity logging API | Separate .NET logging infrastructure | Separate logging solution | `GameLog` and configurable sinks |
-| IL2CPP | Native Unity backend | Not a Unity-specific container | Supported; see its AOT guidance | Unverified; runtime advice, generated repositories and catalogs unavailable |
+| IL2CPP | Native Unity backend | Not a Unity-specific container | Supported; see its AOT guidance | Supported through editor-generated proxies; macOS player smoke-tested |
 
 .NET and VContainer already support keyed resolution. UniSpring's distinction is the automatically discovered, injectable registry keyed by the application's own domain values, without requiring consumers to resolve services from the container. The trade-off is more convention and a younger implementation.
 
@@ -366,8 +369,8 @@ This is a unit test of the rule and service, not a test of assembly scanning or 
 | Singleton / prototype | Application / Transient (different ownership rules) |
 | Context and scoped beans | `ApplicationContext`, Application / Scene / child scopes |
 | Inject a collection and build a strategy map | `[Strategy]`, `IKeyedStrategy<TKey>`, `StrategyRegistry<TKey, TStrategy>` |
-| Spring AOP | `IMethodInterceptor` (Mono only) |
-| `@Transactional` | `[Transactional]` (Mono only; different default rollback policy) |
+| Spring AOP | `IMethodInterceptor` (generated proxies on IL2CPP) |
+| `@Transactional` | `[Transactional]` (different default rollback policy) |
 | `Lifecycle` / `SmartLifecycle` (conceptual) | `ILifecycle` |
 | `@Profile` | `[Profile]` |
 | `ApplicationEventPublisher` / `@EventListener` | `IEventPublisher` / `IEventListener<T>` |
@@ -403,7 +406,7 @@ public sealed class PurchaseLog : IEventListener<ItemPurchased>
 }
 ```
 
-The use case injects the repository, catalog and event publisher. It changes player data inside a transaction; independent listeners react after logical commit. A separate Unity adapter handles input and presentation. The full walkthrough includes the serializer, store setup, settings, domain mapper and validators, a purchase transaction, resources, and NUnit tests. This is the architectural workflow UniSpring aims to make predictable for developers and coding agents. The generated repositories, catalogs and advice used in the example require Mono.
+The use case injects the repository, catalog and event publisher. It changes player data inside a transaction; independent listeners react after logical commit. A separate Unity adapter handles input and presentation. The full walkthrough includes the serializer, store setup, settings, domain mapper and validators, a purchase transaction, resources, and NUnit tests. This is the architectural workflow UniSpring aims to make predictable for developers and coding agents.
 
 ## Documentation
 
@@ -507,7 +510,7 @@ assemblies follow the `<Module>.Api` / `<Module>.Runtime` layout.
 ## Transactions
 
 `[Transactional]` runs a bean method inside one `ITransactionManager.Begin`
-(Mono only, see *IL2CPP* above):
+(on IL2CPP through a generated proxy, see *IL2CPP* above):
 
 ```csharp
 [Transactional]

@@ -35,7 +35,7 @@ This alternative catalog contract adds an equality query to the tutorial model. 
 
 Resolution builds and caches the provider's object. An Application service depending on the catalog forces loading during warm-up; a Scene-only dependency may load on first use later. Malformed content or failed validation causes resolution to fail with diagnostics. Use one mapper per domain type; two mappers for one type are an error. `All` and `Ids` are read-only, but the items themselves are whatever objects the mapper made: do not mutate them. Do not destroy a ScriptableObject loaded from Resources; one made for missing defaults is destroyed with the container.
 
-There is no automatic hot reload. Use a deliberate content reload architecture if your game needs one. Catalog proxies are Mono-only; the rest of this path is not verified on IL2CPP.
+There is no automatic hot reload. Use a deliberate content reload architecture if your game needs one. On IL2CPP catalogs use editor-generated proxies (see [IL2CPP](il2cpp.md)).
 
 ## Replace Resources in tests or custom projects
 

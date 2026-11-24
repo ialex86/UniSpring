@@ -1,6 +1,6 @@
 # UniSpring documentation
 
-UniSpring is a Spring-inspired application framework for Unity. Start with the tutorial, then use the subsystem guides as a reference. Mono is the starting backend; generated repositories, catalogs and runtime advice are Mono-only, and IL2CPP has not been verified.
+UniSpring is a Spring-inspired application framework for Unity. Start with the tutorial, then use the subsystem guides as a reference. It runs on Mono and IL2CPP; for IL2CPP the editor generates the proxies behind advice, repositories and catalogs, and a macOS IL2CPP player passes the package's smoke test.
 
 - [Getting started: a complete shop](getting-started.md)
 - [Architecture and module boundaries](architecture.md)

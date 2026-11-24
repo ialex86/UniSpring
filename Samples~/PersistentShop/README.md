@@ -4,7 +4,9 @@ The complete code of the [shop walkthrough](https://github.com/ialex86/UniSpring
 a catalog of items, a wallet document, an inventory repository, a transactional
 purchase, an after-commit listener, a Unity adapter and EditMode tests.
 
-- Requires Mono (the repository, catalog and `[Transactional]` proxies).
+- Runs on Mono and IL2CPP. For IL2CPP the editor writes `UniSpring.Generated.cs`
+  next to `Shop.Runtime.asmdef` (the proxies of the shop, wallet, inventory and
+  catalog); the package's IL2CPP smoke test builds this sample.
 - `Runtime/ShopSetup.cs` installs a `FileDocumentStore` under
   `Application.persistentDataPath/UniSpringShopTutorial` with
   `RuntimeContext.Configure`. A game that already has a configure hook or its

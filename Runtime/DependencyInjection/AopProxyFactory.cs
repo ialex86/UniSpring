@@ -105,7 +105,7 @@ namespace UniSpring.DependencyInjection
         /// <summary>The bean as <paramref name="contract"/>: through a proxy when the contract has advised methods.</summary>
         public object Advise(object instance, Type contract)
         {
-            if (instance == null || instance is AopProxy)
+            if (instance == null || instance is AopProxy || instance is GeneratedProxy)
                 return instance;
             var implementation = instance.GetType();
             if (!IsReady)
@@ -190,6 +190,8 @@ namespace UniSpring.DependencyInjection
         private static object CreateProxy(Type contract, object instance, IReadOnlyDictionary<MethodInfo, MethodAdvice> plan)
         {
             object proxy;
+            if (GeneratedProxies.TryCreate(contract, new AdvisedHandler(instance, plan), out proxy))
+                return proxy;
             try
             {
                 var create = s_CreateProxy ?? (s_CreateProxy = FindCreateProxy());
@@ -200,7 +202,9 @@ namespace UniSpring.DependencyInjection
                 throw new InvalidOperationException(
                     "UniSpring DI could not make a proxy of " + instance.GetType().FullName + " as " + contract.FullName +
                     " (run-time proxies need Reflection.Emit: Mono, not IL2CPP; the interface must be visible). " +
-                    "On IL2CPP use ITransactionManager.Run/RunAsync or another explicit call instead of advice.",
+                    "On IL2CPP the proxy is generated in the editor into UniSpring.Generated.cs: regenerate it " +
+                    "(Tools > UniSpring > Generate IL2CPP Proxies) and check the editor log for why this interface " +
+                    "was left out. A bean gets proxies when one of its methods carries an attribute.",
                     (exception as TargetInvocationException)?.InnerException ?? exception);
             }
 

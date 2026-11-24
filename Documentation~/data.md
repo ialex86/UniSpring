@@ -5,8 +5,8 @@ Spring Data: you declare a repository interface, the container implements it.
 The stored classes know nothing about storage; the format, the shape on disk,
 the checks and the migrations are separate beans.
 
-**Status:** repository interfaces are implemented by run-time proxies, so they
-work on the Mono scripting backend only (see [IL2CPP](il2cpp.md)). The package
+**Status:** repository interfaces are implemented by run-time proxies on Mono
+and by editor-generated ones on IL2CPP (see [IL2CPP](il2cpp.md)). The package
 ships a file store that writes on its own thread and an in-memory store for
 tests.
 
@@ -478,8 +478,8 @@ is a bug in the game's data: it stops the start and the error names the asset.
 A catalog is loaded on its first resolution: one injected into an application
 bean is checked while the application starts, one used only by a Scene bean
 when that scene's scope is built. `All` and `Ids` are read-only. Two
-mappers for one type stop the start. Catalogs are implemented by run-time
-proxies: Mono only.
+mappers for one type stop the start. Catalogs are implemented like
+repositories: run-time proxies on Mono, generated ones on IL2CPP.
 
 ## Settings
 

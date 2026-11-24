@@ -12,7 +12,7 @@ These instructions apply to work on this repository. Projects consuming UniSprin
 - Respect Application, Scene and Transient lifetimes. Application beans cannot depend on scene beans. Transient consumers and external instances own their disposal. Registry entries are cached instances, not factories; prefer stateless, non-disposable strategies and register external strategies before resolution.
 - Inject collections only when all matching implementations are valid in the consumer's scope. Do not use `[Primary]` to filter collections.
 - Use synchronous, parameterless `void` methods for `[PostConstruct]`. Keep AOP interceptors independent of advised beans/registries during bootstrap.
-- On Mono, advised calls must go through interfaces; self-invocation is not intercepted. For IL2CPP, avoid runtime advice and use explicit `ITransactionManager.Run` / `RunAsync`. The default transaction policy commits on exceptions; request rollback only if the store supports it. Never use `async void` for transaction work.
+- On Mono, advised calls must go through interfaces; self-invocation is not intercepted. On IL2CPP advice works through the generated `UniSpring.Generated.cs` files: commit them and put an attribute on every advised method. The default transaction policy commits on exceptions; request rollback only if the store supports it. Never use `async void` for transaction work.
 - Keep container calls on their owning thread. Async transaction completion may occur away from Unity's main thread.
 
 ## Data, events and lifecycle rules
@@ -27,7 +27,7 @@ These instructions apply to work on this repository. Projects consuming UniSprin
 - Use `[Profile]` and explicit context options for environment differences. Do not bypass strict collection scope or module boundary rules.
 - Keep Unity API calls on the main thread. Events run on the publisher/completion thread; marshal UI, audio and scene work when needed. Keep full scans, serialization-heavy work and disk waits out of frame ticks.
 - File writes are asynchronous during normal operation. Check `WaitForDisk`, `LostChanges` and logs at persistence checkpoints; do not promise durability on logical commit. Coordinate reset, shutdown and active work.
-- `[Repository]`, `[Catalog]` and runtime advice require Mono. Do not propose IL2CPP support based on EditMode tests or generated link.xml alone; use ordinary explicit implementations and verify the target build.
+- On IL2CPP `[Repository]`, `[Catalog]` and advice use the editor-generated proxies; keep stored, event and settings types classes. EditMode tests do not prove a player works: build the target (for the package, `Tests~/il2cpp-smoke.sh`).
 - Read [architecture](Documentation~/architecture.md), [shop walkthrough](Documentation~/getting-started.md), [testing](Documentation~/testing.md) and the subsystem contract before introducing a new pattern. Test plain domain behavior, actual repository integration and container/Unity integration separately.
 
 ## Working on UniSpring itself

@@ -3,6 +3,7 @@
     "rootNamespace": "UniSpring.Data.Tests",
     "references": [
         "UniSpring.Data",
+        "UniSpring.DependencyInjection.Editor",
         "UniSpring.Transactions",
         "UniSpring.DependencyInjection",
         "UnityEngine.TestRunner",

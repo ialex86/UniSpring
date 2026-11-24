@@ -22,6 +22,16 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- IL2CPP: the proxies behind `[Transactional]`, custom interceptors,
+  `[Repository]` and `[Catalog]` are generated in the editor into
+  `UniSpring.Generated.cs` per assembly (compiled into IL2CPP players only),
+  with AOT hints for enum-keyed strategy registries; an IL2CPP build with
+  stale files stops before it starts; **Tools > UniSpring > Generate IL2CPP
+  Proxies**. `Tests~/il2cpp-smoke.sh` builds and runs a macOS IL2CPP player.
+- `link.xml` also keeps the stored types of repositories and catalogs, the
+  records and domain types of mappers and validators, listener events,
+  `[ConfigurationProperties]` classes and the generated proxies (High
+  stripping removed members that queries and serializers read).
 - Persistent Shop sample: the getting-started walkthrough as a compiled sample
   with EditMode tests; CI builds and tests it and checks it matches the page.
 - `FileDocumentStore.RecoveryPending`; `IsIdle` and `WaitForDisk` report false

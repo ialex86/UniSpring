@@ -28,7 +28,7 @@ namespace UniSpring.DependencyInjection
             return Call(method, m_Target, args);
         }
 
-        private static MethodInfo Definition(MethodInfo method)
+        internal static MethodInfo Definition(MethodInfo method)
             => method.IsGenericMethod ? method.GetGenericMethodDefinition() : method;
 
         /// <summary>Calls the bean through the interface method (virtual dispatch), with its own exception.</summary>
@@ -62,14 +62,17 @@ namespace UniSpring.DependencyInjection
     internal sealed class MethodInvocation : IMethodInvocation
     {
         private readonly MethodAdvice m_Advice;
+        private readonly Func<object, object[], object> m_Direct;
         private int m_Next;
 
-        public MethodInvocation(object target, MethodInfo method, MethodAdvice advice, object[] arguments)
+        public MethodInvocation(
+            object target, MethodInfo method, MethodAdvice advice, object[] arguments, Func<object, object[], object> direct = null)
         {
             Target = target;
             Method = method;
             m_Advice = advice;
             Arguments = arguments;
+            m_Direct = direct;
         }
 
         public MethodInfo Method { get; }
@@ -81,7 +84,8 @@ namespace UniSpring.DependencyInjection
         {
             if (m_Next < m_Advice.Chain.Length)
                 return m_Advice.Chain[m_Next++].Invoke(this);
-            return AopProxy.Call(Method, Target, Arguments);
+            // A generated proxy calls the bean directly (no reflection: IL2CPP); a run-time one through the method.
+            return m_Direct != null ? m_Direct(Target, Arguments) : AopProxy.Call(Method, Target, Arguments);
         }
     }
 

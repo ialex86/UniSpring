@@ -174,10 +174,10 @@ Rules:
 - A failure in `ScopeInterceptor.Complete` or in disposing the scope never
   replaces the exception of the method itself; it is attached to it in
   `Exception.Data`.
-- Proxies are generated at run time with `DispatchProxy`: Mono only. On
-  IL2CPP resolving an advised bean fails with an explanatory error; see
-  [IL2CPP](il2cpp.md). `AopProxies.Create` builds one by hand for an object made with
-  `new`.
+- On Mono proxies are made at run time with `DispatchProxy`. For IL2CPP the
+  editor generates them into `UniSpring.Generated.cs`; a bean is given proxies
+  when one of its methods carries an attribute (see [IL2CPP](il2cpp.md)).
+  `AopProxies.Create` builds one by hand for an object made with `new` (Mono).
 
 ## Strategies
 
@@ -354,6 +354,7 @@ player build. It preserves, in every assembly that depends on UniSpring:
   every `[ComponentFamily]` member;
 - every type that declares `[Autowired]` members or `[PostConstruct]` methods.
 
-No extra linker configuration is normally expected for these types. This does
-not establish IL2CPP/AOT compatibility; see [IL2CPP](il2cpp.md) and verify a
-real player build.
+It also keeps the types repositories, catalogs, mappers, validators and
+listeners name as generic arguments, `[ConfigurationProperties]` classes and
+the generated proxies. See [IL2CPP](il2cpp.md) and verify each target in a real
+player build.

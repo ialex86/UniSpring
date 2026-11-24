@@ -1,7 +1,7 @@
 # Lifecycle, events and ticks
 
 Three container services that replace hand-written plumbing: start and stop
-hooks, events between modules, and the frame loop. They do not require runtime method proxies; IL2CPP compatibility and PlayerLoop installation across Play sessions are not yet verified.
+hooks, events between modules, and the frame loop. They need no proxies of their own and run in the package's macOS IL2CPP smoke test; loop entries are never installed twice across Play sessions without a domain reload.
 
 ## Lifecycle
 

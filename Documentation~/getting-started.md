@@ -2,7 +2,7 @@
 
 [Documentation index](index.md) · [Architecture](architecture.md) · [Testing](testing.md)
 
-Build a shop that reads item definitions from shipped content, maintains a wallet and owned items, and announces successful purchases. The first purchase costs 25 coins from a starting balance of 100. The example uses Mono and Unity 6, does not require a custom DI container configuration component, and does not depend on scene objects in business logic.
+Build a shop that reads item definitions from shipped content, maintains a wallet and owned items, and announces successful purchases. The first purchase costs 25 coins from a starting balance of 100. The example uses Unity 6 (Mono or IL2CPP), does not require a custom DI container configuration component, and does not depend on scene objects in business logic.
 
 This is a teaching project, not a production commerce or crash-proof persistence system. Use a separate save root, keep purchases and reset on one thread, and avoid parallel work inside transactions. [Known platform and persistence limits](data.md#filedocumentstore) apply.
 
@@ -10,7 +10,7 @@ The finished code is the **Persistent Shop** sample: import it from the Package 
 
 ## 1. Install and create an assembly
 
-In a fresh Unity project, set the scripting backend to Mono for a supported target. Install the package as described in the [README](../README.md#install), pinning the latest release tag. Do not overwrite the other dependencies in your manifest.
+In a fresh Unity project install the package as described in the [README](../README.md#install), pinning the latest release tag. Do not overwrite the other dependencies in your manifest.
 
 Create `Assets/Shop/Shop.Runtime.asmdef` with these assembly references (add them using the Inspector):
 
@@ -405,4 +405,4 @@ After a successful checkpoint, exit and re-enter Play Mode. The same tutorial ro
 - [Lifecycle, events and ticks](lifecycle-events-ticks.md): make a separate simulation or listener.
 - [Data](data.md): add record migrations, strict reads and recovery tests.
 - [Catalogs and settings](catalogs-and-settings.md): supply resources from a test double or a custom backend.
-- [IL2CPP](il2cpp.md): the generated repository/catalog and advice used here require Mono.
+- [IL2CPP](il2cpp.md): build this shop for IL2CPP (the editor generates the proxies; the package's smoke test builds exactly this sample).
