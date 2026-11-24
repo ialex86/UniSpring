@@ -498,6 +498,29 @@ namespace UniSpring.DependencyInjection.Tests
         }
 
         [Test]
+        public void Installing_The_Loop_Entries_Again_Never_Duplicates_Them()
+        {
+            // A second Play session without a domain reload installs into the loop the first one left.
+            var once = TickLoop.WithEntries(UnityEngine.LowLevel.PlayerLoop.GetDefaultPlayerLoop());
+            var twice = TickLoop.WithEntries(TickLoop.WithEntries(once));
+
+            foreach (var marker in TickLoop.Markers)
+                Assert.AreEqual(1, Count(twice, marker), marker.Name);
+        }
+
+        private static int Count(UnityEngine.LowLevel.PlayerLoopSystem system, Type marker)
+        {
+            var count = system.type == marker ? 1 : 0;
+            if (system.subSystemList != null)
+            {
+                foreach (var child in system.subSystemList)
+                    count += Count(child, marker);
+            }
+
+            return count;
+        }
+
+        [Test]
         public void A_Failing_Tickable_Is_Logged_And_The_Others_Still_Run_Until_The_Container_Ends()
         {
             var journal = new Journal();

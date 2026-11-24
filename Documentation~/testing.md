@@ -2,7 +2,7 @@
 
 [Documentation index](index.md) · [Shop walkthrough](getting-started.md)
 
-A passing EditMode suite is useful evidence, not evidence that a Unity player build or a disk failure path works. The package's EditMode suite runs on Unity 6000.6.6f1. PlayerLoop installation, Play Mode shutdown and IL2CPP/linker behavior are not covered by it. Tutorial snippets added in this documentation revision have not been compiled or executed.
+A passing EditMode suite is useful evidence, not evidence that a Unity player build or a disk failure path works. The package's EditMode suite runs on Unity 6000.6.6f1. PlayerLoop installation, Play Mode shutdown and IL2CPP/linker behavior are not covered by it. The shop walkthrough's code is the Persistent Shop sample, which the package's CI compiles and tests.
 
 ## Test at the appropriate boundary
 

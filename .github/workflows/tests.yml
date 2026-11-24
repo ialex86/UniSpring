@@ -22,10 +22,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 "Tests~/check-samples.py"
           host=".ci/UniSpringTestProject"
           rm -rf "$host"
           mkdir -p "$(dirname "$host")"
           cp -R "Tests~/UnityProject" "$host"
+          # The shop sample is compiled and its tests run with the package's.
+          mkdir -p "$host/Assets"
+          cp -R "Samples~/PersistentShop" "$host/Assets/PersistentShop"
           cat > "$host/Packages/manifest.json" <<EOF
           {
               "dependencies": {

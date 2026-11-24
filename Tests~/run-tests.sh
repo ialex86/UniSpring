@@ -29,8 +29,13 @@ HOST="${UNISPRING_TEST_HOST:-$(mktemp -d)/UniSpringTestProject}"
 RESULTS="${UNISPRING_TEST_RESULTS:-$PACKAGE_ROOT/TestResults/editmode.xml}"
 mkdir -p "$(dirname "$RESULTS")"
 
+python3 "$PACKAGE_ROOT/Tests~/check-samples.py"
+
 rm -rf "$HOST"
 cp -R "$PACKAGE_ROOT/Tests~/UnityProject" "$HOST"
+# The shop sample is compiled and its tests run with the package's.
+mkdir -p "$HOST/Assets"
+cp -R "$PACKAGE_ROOT/Samples~/PersistentShop" "$HOST/Assets/PersistentShop"
 
 cat > "$HOST/Packages/manifest.json" <<EOF
 {

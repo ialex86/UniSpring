@@ -52,8 +52,8 @@ namespace UniSpring.Data.Internal
     /// returns the backup. Several changes go to disk through a journal: their new contents are written first,
     /// then the journal (the commit point: it is written under a temporary name and moved in place, so a journal is
     /// either whole or absent), then they are put in place; a journal left by a crash is completed when the store
-    /// opens. A journal that cannot be read is kept for the next try; one that is damaged is set aside as
-    /// <c>.corrupt</c> and logged, never deleted.
+    /// opens. A journal that cannot be read is kept for the next try; one that is damaged is moved with the
+    /// documents it prepared to <c>.recovery</c> and logged, never deleted.
     /// </summary>
     internal sealed class DocumentFiles
     {
@@ -66,7 +66,7 @@ namespace UniSpring.Data.Internal
         private const string TempExtension = ".tmp";
         private const string JournalExtension = ".journal";
         private const string JournalFolder = ".journal";
-        private const string CorruptExtension = ".corrupt";
+        private const string RecoveryFolder = ".recovery";
         private const int MaxHeaderBytes = 1024;
 
         private static readonly Encoding Ascii = Encoding.ASCII;
@@ -268,19 +268,14 @@ namespace UniSpring.Data.Internal
         // ---------------------------------------------------------------- writes
 
         /// <summary>
-        /// Puts the changes on disk as one step: a single change directly, several through a journal.
-        /// <para>
-        /// A committed journal is never rewritten or deleted before it is complete: a journal an earlier attempt left
-        /// (the disk refused while it was put in place) is completed first, and only then is this step prepared,
-        /// under a step id never used before (<paramref name="step"/> must be unique). So the old content lands
-        /// before the new one, and a failure while preparing this step cannot touch the earlier journal.
-        /// </para>
+        /// Puts the changes on disk as one step: a single change directly, several through a journal. The caller
+        /// completes the pending journals first (<see cref="CompletePending"/>), so the old content lands before the
+        /// new one; <paramref name="step"/> must be an id never used before, in this run or an earlier one.
         /// When the disk refuses before this step is committed, nothing of it has changed and the exception is the
-        /// disk's own; once a journal is committed (this one or an earlier one), <see cref="StepCommittedException"/>.
+        /// disk's own; once its journal is committed, <see cref="StepCommittedException"/>.
         /// </summary>
-        public void Apply(IReadOnlyList<DocumentChange> changes, long step)
+        public void ApplyStep(IReadOnlyList<DocumentChange> changes, long step)
         {
-            CompletePending();
             if (changes.Count == 0)
                 return;
             if (changes.Count == 1)
@@ -293,11 +288,13 @@ namespace UniSpring.Data.Internal
         }
 
         /// <summary>
-        /// Completes every committed journal on disk, oldest first. Throws <see cref="StepCommittedException"/> when
-        /// the disk refuses to read or finish one; it then stays for the next try. A damaged journal is set aside.
+        /// Completes every committed journal on disk, oldest first, and returns the ids of those it completed.
+        /// Throws <see cref="StepCommittedException"/> when the disk refuses to read or finish one; it then stays for
+        /// the next try. A damaged journal is set aside with its prepared documents.
         /// </summary>
-        private void CompletePending()
+        public IReadOnlyCollection<long> CompletePending()
         {
+            var completed = new List<long>();
             var journals = new List<KeyValuePair<long, string>>();
             foreach (var journal in m_Files.Files(Path.Combine(m_Root, JournalFolder), "*" + JournalExtension))
             {
@@ -338,29 +335,55 @@ namespace UniSpring.Data.Internal
                     throw new StepCommittedException(exception, true);
                 }
 
+                completed.Add(id);
                 GameLog.Info("UniSpring Data completed an interrupted save step (" + entries.Count + " documents).");
             }
+
+            return completed;
         }
 
         /// <summary>
-        /// A damaged journal cannot be completed, and deleting it would hide that a save may be partial: it is
-        /// renamed to <c>.corrupt</c> (kept for inspection) and reported.
+        /// A damaged journal cannot be completed, and deleting it would hide that a save may be partial. It is moved
+        /// with the documents it prepared (its temporary files) to <c>&lt;root&gt;/.recovery/&lt;step&gt;/</c>, where
+        /// nothing reads or deletes them, and reported: whoever restores the save has what the step wrote.
         /// </summary>
         private void SetAside(string journal, string damage)
         {
-            var corrupt = Path.ChangeExtension(journal, null) + CorruptExtension;
+            var name = Path.GetFileNameWithoutExtension(journal);
+            var folder = Path.Combine(m_Root, RecoveryFolder, name);
             try
             {
-                m_Files.Replace(journal, corrupt, corrupt + BackupExtension);
+                m_Files.CreateDirectory(folder);
+                Move(journal, Path.Combine(folder, Path.GetFileName(journal)));
+                long step;
+                if (long.TryParse(name, NumberStyles.None, CultureInfo.InvariantCulture, out step))
+                {
+                    var stepText = "." + name + TempExtension;
+                    foreach (var temp in m_Files.FilesBelow(m_Root, "*" + stepText))
+                    {
+                        if (IsUnder(temp, RecoveryFolder))
+                            continue;
+                        var relative = temp.Substring(m_Root.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        var target = Path.Combine(folder, "documents", relative.Substring(0, relative.Length - TempExtension.Length));
+                        m_Files.CreateDirectory(Path.GetDirectoryName(target));
+                        Move(temp, target);
+                    }
+                }
             }
             catch (Exception exception)
             {
                 throw new StepCommittedException(exception, true);
             }
 
-            GameLog.Error("UniSpring Data set aside a damaged save step (" + damage + "): " +
-                          Path.GetFileName(corrupt) + ". The documents it named may hold their older contents.");
+            GameLog.Error("UniSpring Data set aside a damaged save step (" + damage + ") in " + folder +
+                          ", with the documents it prepared. The documents it named may hold their older contents.");
         }
+
+        private void Move(string source, string destination)
+            => m_Files.Replace(source, destination, destination + BackupExtension);
+
+        private bool IsUnder(string path, string folder)
+            => path.StartsWith(Path.Combine(m_Root, folder) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
 
         private void ApplyJournaled(IReadOnlyList<DocumentChange> changes, long step)
         {
@@ -508,7 +531,10 @@ namespace UniSpring.Data.Internal
         {
             CompletePending();
             foreach (var temp in m_Files.FilesBelow(m_Root, "*" + TempExtension))
-                m_Files.Delete(temp);
+            {
+                if (!IsUnder(temp, RecoveryFolder))
+                    m_Files.Delete(temp);
+            }
         }
 
         /// <summary>

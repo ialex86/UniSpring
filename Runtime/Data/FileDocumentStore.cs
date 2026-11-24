@@ -77,7 +77,10 @@ namespace UniSpring.Data
         private readonly ClearListeners m_ClearListeners = new ClearListeners();
         private readonly Thread m_Thread;
         private long m_LastSequence;
-        private long m_StepIds;
+
+        // Step ids name journals and temporary files on disk: seeded from the clock, they never repeat one an
+        // earlier run left there.
+        private long m_StepIds = DateTime.UtcNow.Ticks;
 
         // Document changes left out of the disk in this session (refused while closing); never on disk.
         private int m_Lost;
@@ -85,8 +88,10 @@ namespace UniSpring.Data
         // The sequence of the last write of every document, so a clear never deletes a later write.
         private readonly Dictionary<(string, string), long> m_LastWrite = new Dictionary<(string, string), long>();
 
-        // A committed step the disk refused to finish: its journal waits on disk, through this sequence.
+        // A committed journal waits on disk (the disk refused to finish it, now or in an earlier run). When it is
+        // this run's step m_StrandedStep, it holds the queued steps through m_StrandedThrough.
         private bool m_Stranded;
+        private long m_StrandedStep;
         private long m_StrandedThrough;
         private long m_Landed;
         private bool m_Closed;
@@ -110,9 +115,10 @@ namespace UniSpring.Data
             {
                 m_Files.Recover();
             }
-            catch (StepCommittedException exception)
+            catch (Exception exception)
             {
-                // Retried before the first step lands; until then the documents it names read their old contents.
+                // Retried by the writer until the disk takes it; until then the documents it names read their old
+                // contents and the store does not report itself idle.
                 m_Stranded = true;
                 GameLog.Error("UniSpring Data: the disk refused to complete an interrupted save step; it is tried " +
                               "again before the next save.", exception);
@@ -221,7 +227,21 @@ namespace UniSpring.Data
             get
             {
                 lock (m_Gate)
-                    return m_Landed >= m_LastSequence && m_Lost == 0;
+                    return m_Landed >= m_LastSequence && m_Lost == 0 && !m_Stranded;
+            }
+        }
+
+        /// <summary>
+        /// A committed save step waits on disk to be completed (the disk refused to finish it, now or when the store
+        /// opened). The writer keeps trying; until it succeeds the store is not idle and the documents it names read
+        /// their older contents.
+        /// </summary>
+        public bool RecoveryPending
+        {
+            get
+            {
+                lock (m_Gate)
+                    return m_Stranded;
             }
         }
 
@@ -249,8 +269,10 @@ namespace UniSpring.Data
             lock (m_Gate)
             {
                 var target = m_LastSequence;
-                while (m_Landed < target)
+                while (m_Landed < target || m_Stranded)
                 {
+                    if (m_Closed && m_Stranded)
+                        return false; // nothing retries it any more in this run
                     if (timeout == Timeout.InfiniteTimeSpan)
                     {
                         Monitor.Wait(m_Gate);
@@ -517,7 +539,7 @@ namespace UniSpring.Data
                 int count;
                 lock (m_Gate)
                 {
-                    while (m_Queue.Count == 0 && !m_Closed)
+                    while (m_Queue.Count == 0 && !m_Stranded && !m_Closed)
                         Monitor.Wait(m_Gate);
                     if (m_Closed)
                         return;
@@ -574,20 +596,21 @@ namespace UniSpring.Data
                 {
                     lock (m_Gate)
                     {
-                        if (m_Queue.Count == 0)
+                        if (m_Queue.Count == 0 && !m_Stranded)
                             return;
-                        if (m_Stranded)
-                        {
-                            DropAllStranded();
-                            return;
-                        }
                     }
 
+                    // A waiting journal is tried first; only if the disk still refuses it do the steps go.
                     Exception refusal;
                     if (TryLand(1, out refusal))
                         continue;
                     if (refusal is StepCommittedException)
-                        continue; // stranded now: the next round drops the rest
+                    {
+                        lock (m_Gate)
+                            DropAllStranded();
+                        return;
+                    }
+
                     DropFirstStep(refusal);
                 }
             }
@@ -632,8 +655,9 @@ namespace UniSpring.Data
             }
 
             m_Queue.Clear();
-            GameLog.Warn("UniSpring Data: " + covered + " document change(s) the disk refused to finish are completed " +
-                         "the next time the store opens.");
+            if (covered > 0)
+                GameLog.Warn("UniSpring Data: " + covered + " document change(s) the disk refused to finish are " +
+                             "completed the next time the store opens.");
             if (later.Count > 0)
                 GameLog.Error("UniSpring Data: documents written after a step the disk refused are not saved: " +
                               string.Join(", ", later));
@@ -668,11 +692,40 @@ namespace UniSpring.Data
             refusal = null;
             lock (m_DiskGate)
             {
+                // The journals waiting on disk first, as their own operation: the store learns which completed even
+                // when the step after them fails.
+                IReadOnlyCollection<long> completed;
+                try
+                {
+                    completed = m_Files.CompletePending();
+                }
+                catch (Exception exception)
+                {
+                    // Whatever the disk refused (reading, finishing or even listing the journals), a committed
+                    // step may wait there: nothing after it may land first.
+                    refusal = exception as StepCommittedException ?? new StepCommittedException(exception, true);
+                    lock (m_Gate)
+                        m_Stranded = true;
+                    return false;
+                }
+
                 List<Step> steps;
                 lock (m_Gate)
                 {
+                    if (m_Stranded)
+                    {
+                        // Nothing waits on disk any more. The queued steps this run's journal held are on disk now:
+                        // applying them again would overwrite the backups the journal made.
+                        if (m_StrandedStep != 0 && Contains(completed, m_StrandedStep))
+                            count -= Landed(m_StrandedThrough);
+                        m_Stranded = false;
+                        m_StrandedStep = 0;
+                        m_StrandedThrough = 0;
+                        Monitor.PulseAll(m_Gate);
+                    }
+
                     count = Math.Min(count, m_Queue.Count);
-                    if (count == 0)
+                    if (count <= 0)
                         return true;
                     steps = m_Queue.GetRange(0, count);
                 }
@@ -697,21 +750,21 @@ namespace UniSpring.Data
                 }
 
                 var last = steps[steps.Count - 1].Sequence;
+                var id = Interlocked.Increment(ref m_StepIds);
                 try
                 {
-                    m_Files.Apply(merged, Interlocked.Increment(ref m_StepIds));
+                    m_Files.ApplyStep(merged, id);
                 }
                 catch (Exception exception)
                 {
                     refusal = exception;
-                    var committed = exception as StepCommittedException;
-                    if (committed != null)
+                    if (exception is StepCommittedException)
                     {
                         lock (m_Gate)
                         {
                             m_Stranded = true;
-                            if (!committed.EarlierStep)
-                                m_StrandedThrough = last; // these steps are in the committed journal
+                            m_StrandedStep = id;
+                            m_StrandedThrough = last;
                         }
                     }
 
@@ -720,7 +773,6 @@ namespace UniSpring.Data
 
                 lock (m_Gate)
                 {
-                    m_Stranded = false;
                     m_Queue.RemoveRange(0, count);
                     foreach (var change in merged)
                     {
@@ -736,6 +788,41 @@ namespace UniSpring.Data
 
                 return true;
             }
+        }
+
+        private static bool Contains(IReadOnlyCollection<long> ids, long id)
+        {
+            foreach (var each in ids)
+            {
+                if (each == id)
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>Under the gate: the queued steps through <paramref name="through"/> are on disk; returns how many.</summary>
+        private int Landed(long through)
+        {
+            var removed = 0;
+            while (m_Queue.Count > 0 && m_Queue[0].Sequence <= through)
+            {
+                var step = m_Queue[0];
+                m_Queue.RemoveAt(0);
+                removed++;
+                foreach (var change in step.Changes)
+                {
+                    var key = (change.Area, change.Name);
+                    DocumentChange waiting;
+                    if (m_Waiting.TryGetValue(key, out waiting) && waiting.Version <= step.Sequence)
+                        m_Waiting.Remove(key);
+                }
+
+                if (step.Sequence > m_Landed)
+                    m_Landed = step.Sequence;
+            }
+
+            return removed;
         }
 
         private static (string, string) Key(string area, string name)

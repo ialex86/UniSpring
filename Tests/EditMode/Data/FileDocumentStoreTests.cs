@@ -242,7 +242,7 @@ namespace UniSpring.Data.Tests
         }
 
         [Test]
-        public void A_Damaged_Journal_Is_Set_Aside_And_The_Documents_Stay_As_They_Were()
+        public void A_Damaged_Journal_Is_Set_Aside_With_Its_Prepared_Documents()
         {
             LogAssert.ignoreFailingMessages = true;
             var store = Open();
@@ -258,10 +258,16 @@ namespace UniSpring.Data.Tests
 
             var reopened = Open();
 
-            Assert.AreEqual("coupe", Text(reopened.Read("Garage", "car-1")));
-            Assert.AreEqual(new[] { "9.corrupt" }, Array.ConvertAll(Directory.GetFiles(journal), Path.GetFileName),
-                            "kept for inspection, never completed or deleted");
+            Assert.AreEqual("coupe", Text(reopened.Read("Garage", "car-1")), "the documents stay as they were");
+            Assert.IsEmpty(Directory.GetFiles(journal));
             Assert.IsFalse(File.Exists(stray));
+            var kept = Path.Combine(m_Root, ".recovery", "9");
+            Assert.IsTrue(File.Exists(Path.Combine(kept, "9.journal")), "the journal is kept, never deleted");
+            Assert.AreEqual("half written", File.ReadAllText(
+                Path.Combine(kept, "documents", "Garage", Path.GetFileName(stray).Replace(".tmp", ""))),
+                "and so is what it prepared");
+            Assert.IsTrue(Reopen().IsIdle, "a later start leaves the kept files alone");
+            Assert.IsTrue(Directory.Exists(kept));
         }
 
         [Test]
@@ -280,6 +286,9 @@ namespace UniSpring.Data.Tests
             // Opening on a disk that refuses to read the journal does not throw and deletes nothing.
             var refusing = Open(new FlakyFileSystem { FailReadsOf = ".journal" });
             Assert.AreEqual(1, Directory.GetFiles(Path.Combine(m_Root, ".journal"), "*.journal").Length, "the journal stays");
+            Assert.IsTrue(refusing.RecoveryPending);
+            Assert.IsFalse(refusing.IsIdle, "a store with a step to recover is not idle");
+            Assert.IsFalse(refusing.WaitForDisk(TimeSpan.FromMilliseconds(100)));
             refusing.Close(TimeSpan.FromMilliseconds(100));
 
             var reopened = Open();
@@ -452,6 +461,59 @@ namespace UniSpring.Data.Tests
         }
 
         [Test]
+        public void Replay_Does_Not_Treat_A_File_It_Cannot_Check_As_Missing()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var store = Open(new FlakyFileSystem { FailReplaceOf = "Garage" });
+            store.Run(() =>
+            {
+                store.Write("Economy", "wallet", Bytes("40"));
+                store.Write("Garage", "car-1", Bytes("coupe"));
+            });
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(200)));
+            store.Close(TimeSpan.FromMilliseconds(100));
+
+            var blind = Open(new FlakyFileSystem { FailExistsOf = ".tmp" });
+            Assert.IsTrue(blind.RecoveryPending, "cannot look is not 'not there'");
+            Assert.AreEqual(1, Directory.GetFiles(Path.Combine(m_Root, ".journal"), "*.journal").Length);
+            blind.Close(TimeSpan.FromMilliseconds(100));
+
+            Assert.AreEqual("coupe", Text(Open().Read("Garage", "car-1")), "completed once the disk answers");
+        }
+
+        [Test]
+        public void A_Recovered_Step_Is_Not_Written_Again_Nor_Holds_Back_Later_Ones()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var files = new FlakyFileSystem();
+            var store = Open(files);
+            store.Write("Economy", "wallet", Bytes("old"));
+            Assert.IsTrue(store.WaitForDisk(Wait));
+
+            files.FailReplaceOf = "Garage";
+            store.Run(() =>
+            {
+                store.Write("Economy", "wallet", Bytes("new"));
+                store.Write("Garage", "car-1", Bytes("coupe"));
+            });
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(200)));
+            Assert.IsTrue(store.RecoveryPending);
+
+            files.FailReplaceOf = null;
+            store.Write("Garage", "car-2", Bytes("van"));
+            Assert.IsTrue(store.WaitForDisk(Wait), "the journal completes and the later write lands");
+            Assert.IsFalse(store.RecoveryPending);
+            store.Close(Wait);
+
+            // The wallet's backup is still the old content: the recovered step was not applied a second time.
+            File.WriteAllText(new DocumentFiles(m_Root, SystemFileSystem.Instance).DocumentPath("Economy", "wallet"), "damaged");
+            var reopened = Open();
+            Assert.AreEqual("old", Text(reopened.Read("Economy", "wallet")));
+            Assert.AreEqual("coupe", Text(reopened.Read("Garage", "car-1")));
+            Assert.AreEqual("van", Text(reopened.Read("Garage", "car-2")));
+        }
+
+        [Test]
         public void A_Clear_Keeps_A_Document_Written_After_It_Began()
         {
             var files = new FlakyFileSystem();
@@ -507,7 +569,15 @@ namespace UniSpring.Data.Tests
             /// <summary>Writing a file under a folder with this name always fails.</summary>
             public string FailWritesOf;
 
-            public bool Exists(string path) => m_Inner.Exists(path);
+            public bool Exists(string path)
+            {
+                if (FailExistsOf != null && path.Contains(FailExistsOf))
+                    throw new IOException("the disk cannot tell");
+                return m_Inner.Exists(path);
+            }
+
+            /// <summary>Checking a file whose path contains this text always fails.</summary>
+            public string FailExistsOf;
 
             /// <summary>Reading a file under a folder with this name always fails.</summary>
             public string FailReadsOf;

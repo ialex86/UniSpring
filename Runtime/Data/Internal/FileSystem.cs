@@ -7,6 +7,7 @@ namespace UniSpring.Data.Internal
     /// <summary>The file operations the file store needs; tests inject failures through it.</summary>
     internal interface IFileSystem
     {
+        /// <summary>False only when the file is absent; throws when it cannot be checked.</summary>
         bool Exists(string path);
 
         byte[] ReadAllBytes(string path);
@@ -24,7 +25,10 @@ namespace UniSpring.Data.Internal
 
         void CreateDirectory(string path);
 
-        /// <summary>Files directly in the folder matching the pattern; empty when the folder does not exist.</summary>
+        /// <summary>
+        /// Files directly in the folder matching the pattern; empty when the folder does not exist. Throws when the
+        /// folder cannot be checked.
+        /// </summary>
         IReadOnlyList<string> Files(string directory, string pattern);
 
         /// <summary>Files in the folder and every subfolder matching the pattern.</summary>
@@ -35,7 +39,41 @@ namespace UniSpring.Data.Internal
     {
         public static readonly SystemFileSystem Instance = new SystemFileSystem();
 
-        public bool Exists(string path) => File.Exists(path);
+        /// <summary>
+        /// False only when the file is really absent: a file the system cannot check (no access, I/O error) throws,
+        /// so recovery never takes "cannot look" for "not there".
+        /// </summary>
+        public bool Exists(string path)
+        {
+            try
+            {
+                return (File.GetAttributes(path) & FileAttributes.Directory) == 0;
+            }
+            catch (FileNotFoundException)
+            {
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return false;
+            }
+        }
+
+        private static bool DirectoryExists(string path)
+        {
+            try
+            {
+                return (File.GetAttributes(path) & FileAttributes.Directory) != 0;
+            }
+            catch (FileNotFoundException)
+            {
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return false;
+            }
+        }
 
         public byte[] ReadAllBytes(string path) => File.ReadAllBytes(path);
 
@@ -50,30 +88,30 @@ namespace UniSpring.Data.Internal
 
         public void Replace(string source, string destination, string backup)
         {
-            if (!File.Exists(destination))
+            if (!Exists(destination))
             {
                 File.Move(source, destination);
                 return;
             }
 
-            if (File.Exists(backup))
+            if (Exists(backup))
                 File.Delete(backup);
             File.Replace(source, destination, backup, true);
         }
 
         public void Delete(string path)
         {
-            if (File.Exists(path))
+            if (Exists(path))
                 File.Delete(path);
         }
 
         public void CreateDirectory(string path) => Directory.CreateDirectory(path);
 
         public IReadOnlyList<string> Files(string directory, string pattern)
-            => Directory.Exists(directory) ? Directory.GetFiles(directory, pattern) : Array.Empty<string>();
+            => DirectoryExists(directory) ? Directory.GetFiles(directory, pattern) : Array.Empty<string>();
 
         public IReadOnlyList<string> FilesBelow(string directory, string pattern)
-            => Directory.Exists(directory)
+            => DirectoryExists(directory)
                 ? Directory.GetFiles(directory, pattern, SearchOption.AllDirectories)
                 : Array.Empty<string>();
     }

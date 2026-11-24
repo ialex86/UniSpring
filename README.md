@@ -542,6 +542,11 @@ message that explains what to register.
 Import **Basic Setup** from the Package Manager to see DI, an autowired
 MonoBehaviour and `GameLog` in action.
 
+Import **Persistent Shop** for the complete code of the
+[shop walkthrough](Documentation~/getting-started.md): a catalog, saves, a
+transactional purchase, events, a Unity adapter and EditMode tests (Mono). CI
+compiles it and runs its tests, and checks that it matches the walkthrough.
+
 ## Tests
 
 The package tests live in `Tests/EditMode`. `Tests~/UnityProject` is a host

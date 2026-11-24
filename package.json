@@ -30,6 +30,11 @@
             "displayName": "Basic Setup",
             "description": "DI attributes, autowired MonoBehaviour and GameLog configuration.",
             "path": "Samples~/BasicSetup"
+        },
+        {
+            "displayName": "Persistent Shop",
+            "description": "The getting-started walkthrough: catalog, wallet and inventory saves, a transactional purchase, events and EditMode tests (Mono).",
+            "path": "Samples~/PersistentShop"
         }
     ]
 }

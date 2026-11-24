@@ -6,6 +6,8 @@ Build a shop that reads item definitions from shipped content, maintains a walle
 
 This is a teaching project, not a production commerce or crash-proof persistence system. Use a separate save root, keep purchases and reset on one thread, and avoid parallel work inside transactions. [Known platform and persistence limits](data.md#filedocumentstore) apply.
 
+The finished code is the **Persistent Shop** sample: import it from the Package Manager (UniSpring → Samples) instead of copying the blocks below. The package's CI compiles it, runs its tests and checks that it matches this page.
+
 ## 1. Install and create an assembly
 
 In a fresh Unity project, set the scripting backend to Mono for a supported target. Install the package as described in the [README](../README.md#install), pinning the latest release tag. Do not overwrite the other dependencies in your manifest.

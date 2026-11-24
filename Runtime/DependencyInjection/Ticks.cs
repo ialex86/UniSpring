@@ -275,12 +275,26 @@ namespace UniSpring.DependencyInjection
                 s_Runners = new TickRunner[0];
         }
 
+        /// <summary>The types of UniSpring's entries, one per phase.</summary>
+        internal static readonly Type[] Markers = { typeof(UniSpringUpdate), typeof(UniSpringLateUpdate), typeof(UniSpringFixedUpdate) };
+
         private static void Install()
         {
             var loop = PlayerLoop.GetCurrentPlayerLoop();
             if (loop.subSystemList == null)
                 return;
-            var systems = loop.subSystemList;
+            PlayerLoop.SetPlayerLoop(WithEntries(loop));
+        }
+
+        /// <summary>
+        /// The loop with UniSpring's entry at the end of each phase. An entry already there (an earlier session
+        /// without a domain reload) is replaced, never added twice.
+        /// </summary>
+        internal static PlayerLoopSystem WithEntries(PlayerLoopSystem loop)
+        {
+            if (loop.subSystemList == null)
+                return loop;
+            var systems = (PlayerLoopSystem[])loop.subSystemList.Clone();
             for (var index = 0; index < systems.Length; index++)
             {
                 var type = systems[index].type;
@@ -293,7 +307,7 @@ namespace UniSpring.DependencyInjection
             }
 
             loop.subSystemList = systems;
-            PlayerLoop.SetPlayerLoop(loop);
+            return loop;
         }
 
         private static PlayerLoopSystem WithEntry(PlayerLoopSystem phase, Type marker, PlayerLoopSystem.UpdateFunction update)

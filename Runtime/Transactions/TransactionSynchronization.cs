@@ -46,15 +46,29 @@ namespace UniSpring.Transactions
                 Run(action);
         }
 
-        /// <summary>Runs <paramref name="action"/> if the transaction of the flow rolls back; outside one, never.</summary>
-        internal static void AfterRollback(Action action)
+        /// <summary>
+        /// Registers <paramref name="committed"/> and <paramref name="rolledBack"/> on the open transaction of the
+        /// flow in one step: either both are held (one of them runs when it ends) or, with no open transaction,
+        /// neither is and the result is false. The transaction cannot end between the check and the registration.
+        /// </summary>
+        internal static bool TryRegisterCompletion(Action committed, Action rolledBack)
         {
-            TryHold(action, true);
+            var frame = s_Current.Value;
+            if (frame == null)
+                return false;
+            lock (frame.Gate)
+            {
+                if (frame.Closed)
+                    return false;
+                (frame.AfterCommit ?? (frame.AfterCommit = new List<Action>())).Add(committed);
+                (frame.AfterRollback ?? (frame.AfterRollback = new List<Action>())).Add(rolledBack);
+                return true;
+            }
         }
 
         private static bool TryHold(Action action, bool onRollback)
         {
-            var frame = Open();
+            var frame = s_Current.Value;
             if (frame == null)
                 return false;
             lock (frame.Gate)
@@ -81,12 +95,18 @@ namespace UniSpring.Transactions
         /// <summary>Enters a transaction boundary; dispose the result after the transaction has ended.</summary>
         internal static Boundary Enter()
         {
-            var frame = Open();
+            var frame = s_Current.Value;
             if (frame != null)
             {
+                // Checked and joined in one step: a transaction that ends meanwhile is never joined.
                 lock (frame.Gate)
-                    frame.Depth++;
-                return new Boundary(frame, false);
+                {
+                    if (!frame.Closed)
+                    {
+                        frame.Depth++;
+                        return new Boundary(frame, false);
+                    }
+                }
             }
 
             frame = new Frame();
@@ -182,12 +202,8 @@ namespace UniSpring.Transactions
         /// </summary>
         public IEventDeferral Capture()
         {
-            if (!TransactionSynchronization.IsActive)
-                return null;
             var captured = new Captured();
-            TransactionSynchronization.AfterCommit(captured.Committed);
-            TransactionSynchronization.AfterRollback(captured.RolledBack);
-            return captured;
+            return TransactionSynchronization.TryRegisterCompletion(captured.Committed, captured.RolledBack) ? captured : null;
         }
 
         internal static bool IsAfterCommit(object listener)

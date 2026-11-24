@@ -4,6 +4,30 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Transactions: entering a boundary and registering early-event completion
+  check and join the transaction in one step, so a transaction that ends
+  meanwhile is never joined or mistaken for committed.
+- File store: a damaged journal is moved with the documents it prepared to
+  `.recovery/<step>/` instead of losing them; a file the system cannot check
+  is no longer taken for a missing one during recovery; a completed journal
+  clears the recovery state even when the next step fails, and its steps are
+  not written a second time (the backups stay); step ids never repeat those of
+  an earlier run.
+- Ticks: the player-loop entries are installed by a pure function, tested to
+  never duplicate them across sessions without a domain reload.
+
+### Added
+
+- Persistent Shop sample: the getting-started walkthrough as a compiled sample
+  with EditMode tests; CI builds and tests it and checks it matches the page.
+- `FileDocumentStore.RecoveryPending`; `IsIdle` and `WaitForDisk` report false
+  while a committed journal waits to be completed, and the writer retries it
+  without waiting for a new write.
+
 ## [0.3.1] - 2026-11-24
 
 ### Fixed

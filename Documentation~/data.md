@@ -277,7 +277,8 @@ document matches the id it is stored under" belongs here too.
 
 The module does not pick a format. Register exactly one `IDocumentSerializer`
 bean. It receives the record (or the object, without a mapper) and the type to
-read back. A document the serializer cannot read is logged and read as missing.
+read back. A document the serializer cannot read is logged; the lenient `Load`
+and `Find` return null for it, while the strict `Read` reports `Unreadable`.
 
 ## Migrations
 
@@ -360,8 +361,8 @@ default root is `Application.persistentDataPath/Saves`.
   put in place. The journal is written under a temporary name and moved in
   place, so it is either whole or absent. A journal a crash left behind is
   completed the next time the store opens. One the disk cannot read stays and
-  is tried again; a damaged one is renamed to `.corrupt` and logged as an
-  error, never deleted. This is the recovery protocol, not a guarantee against
+  is tried again; a damaged one is moved, with the documents it prepared, to
+  `<root>/.recovery/<step>/` and logged as an error, never deleted. This is the recovery protocol, not a guarantee against
   every filesystem fault or power loss: test the target platform and keep the
   backups.
 - **Order.** Changes land in the order they were made, so the disk always holds
@@ -372,11 +373,17 @@ default root is `Application.persistentDataPath/Saves`.
 - **Failure reporting.** During shutdown, refused steps may be discarded to permit later steps to land. `LostChanges` counts discarded changes; `WaitForDisk` and `IsIdle` remain false after a recorded loss in that session. Recovery of a stranded journal is best effort. Preserve the save directory and logs on failure.
 - `WaitForDisk(timeout)` and `IsIdle` tell whether the changes made so far are
   on disk, for tests and tools.
+- **Recovery pending.** When the disk refuses to complete a committed journal
+  (while saving, or when the store opens), the store keeps working: the
+  documents that journal names read their older contents, the writer retries it
+  before anything later lands, and `RecoveryPending` is true. Until it is
+  completed `IsIdle` and `WaitForDisk` report false, even if nothing was
+  written in this session.
 
   `WaitForDisk` is a synchronous check of the store's queued changes, not a power-loss durability guarantee. `AfterCommit` does not wait for it. Check the return value, `LostChanges` and logs; avoid blocking the frame loop on this method.
 
 Files: `<root>/<area>/<hex of the name>.doc`, with `.bak` next to it and
-journals in `<root>/.journal`. Areas are segments of letters, digits, `-` and
+journals in `<root>/.journal`; damaged journals are kept in `<root>/.recovery`. Areas are segments of letters, digits, `-` and
 `_` joined by `/`; names are any text of at most 100 UTF-8 bytes.
 
 Transactions of different flows do not merge: when two flows write the same

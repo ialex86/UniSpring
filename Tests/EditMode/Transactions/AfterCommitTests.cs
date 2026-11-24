@@ -181,6 +181,32 @@ namespace UniSpring.Transactions.Tests
             Assert.AreEqual(new[] { "late" }, lines, "run at once, not held by a transaction that is over");
         }
 
+        [Test]
+        public void A_Transaction_Begun_After_The_Outer_One_Ended_Is_Outermost()
+        {
+            var lines = new List<string>();
+            System.Threading.Tasks.Task late = null;
+            var gate = new System.Threading.ManualResetEventSlim();
+            m_Transactions.Run(() =>
+            {
+                late = System.Threading.Tasks.Task.Run(() =>
+                {
+                    gate.Wait();
+                    m_Transactions.Run(() =>
+                    {
+                        TransactionSynchronization.AfterCommit(() => lines.Add("committed"));
+                        lock (lines)
+                            lines.Add("inside");
+                    });
+                });
+            });
+
+            gate.Set();
+            late.GetAwaiter().GetResult();
+            Assert.AreEqual(new[] { "inside", "committed" }, lines, "its own commit delivers, not the ended outer one");
+            Assert.IsFalse(TransactionSynchronization.IsActive);
+        }
+
         [Component]
         public sealed class EarlyPayer
         {
