@@ -38,6 +38,10 @@ namespace UniSpring.Data
         internal const string RollbackOnlyMessage =
             "The transaction was rolled back inside (a joined transaction asked for it); nothing it wrote is saved.";
 
+        internal const string DroppedMessage =
+            "The transaction was cancelled: the saves were cleared for a new game while it was open; nothing it " +
+            "wrote is saved.";
+
         private sealed class Transaction
         {
             // A null value is a pending delete.
@@ -102,7 +106,17 @@ namespace UniSpring.Data
             m_Timing = timing ?? throw new ArgumentNullException(nameof(timing));
             m_Files = new DocumentFiles(Root, files ?? throw new ArgumentNullException(nameof(files)));
             files.CreateDirectory(Root);
-            m_Files.Recover();
+            try
+            {
+                m_Files.Recover();
+            }
+            catch (StepCommittedException exception)
+            {
+                // Retried before the first step lands; until then the documents it names read their old contents.
+                m_Stranded = true;
+                GameLog.Error("UniSpring Data: the disk refused to complete an interrupted save step; it is tried " +
+                              "again before the next save.", exception);
+            }
             m_Thread = new Thread(Run) { IsBackground = true, Name = "UniSpring document writer" };
             m_Thread.Start();
         }
@@ -273,16 +287,23 @@ namespace UniSpring.Data
                 Application.quitting -= Dispose;
             }
 
-            WaitForDisk(timeout);
+            var deadline = DateTime.UtcNow + timeout;
+            WaitForDisk(Remaining(deadline));
             lock (m_Gate)
             {
                 m_Closed = true;
                 Monitor.PulseAll(m_Gate);
             }
 
-            if (!m_Thread.Join(timeout))
+            if (!m_Thread.Join(Remaining(deadline)))
                 GameLog.Warn("UniSpring Data: the document writer did not stop in " + timeout.TotalSeconds + " s.");
-            DrainNow();
+            DrainNow(Remaining(deadline));
+        }
+
+        private static TimeSpan Remaining(DateTime deadline)
+        {
+            var left = deadline - DateTime.UtcNow;
+            return left > TimeSpan.Zero ? left : TimeSpan.Zero;
         }
 
         public void Dispose() => Close(m_Timing.CloseTimeout);
@@ -381,12 +402,15 @@ namespace UniSpring.Data
         /// <summary>The areas on disk and those only waiting changes know of yet; the migration record is not one.</summary>
         private IReadOnlyList<string> AllAreas()
         {
-            var areas = new SortedSet<string>(m_Files.Areas(), StringComparer.Ordinal);
+            // The waiting changes first: one that lands meanwhile is then on the disk when it is listed.
+            var areas = new SortedSet<string>(StringComparer.Ordinal);
             lock (m_Gate)
             {
                 foreach (var key in m_Waiting.Keys)
                     areas.Add(key.Item1);
             }
+
+            areas.UnionWith(m_Files.Areas());
 
             areas.Remove(MigrationEngine.Area);
             return new List<string>(areas);
@@ -461,6 +485,8 @@ namespace UniSpring.Data
             bool closed;
             lock (m_Gate)
             {
+                if (transaction.Dropped)
+                    throw new InvalidOperationException(DroppedMessage);
                 if (transaction.Closed)
                     return;
                 if (transaction.RollbackOnly)
@@ -528,27 +554,46 @@ namespace UniSpring.Data
         /// committed step the disk refused to finish is completed when the store opens next; the changes after it
         /// would land under it then, so they are left out (logged) too.
         /// </summary>
-        private void DrainNow()
-        {
-            while (true)
-            {
-                lock (m_Gate)
-                {
-                    if (m_Queue.Count == 0)
-                        return;
-                    if (m_Stranded)
-                    {
-                        DropAllStranded();
-                        return;
-                    }
-                }
+        private void DrainNow() => DrainNow(Timeout.InfiniteTimeSpan);
 
-                Exception refusal;
-                if (TryLand(1, out refusal))
-                    continue;
-                if (refusal is StepCommittedException)
-                    continue; // stranded now: the next round drops the rest
-                DropFirstStep(refusal);
+        /// <summary>
+        /// Holds the disk for the whole drain, so two callers never pick, land or drop the same step. A writer
+        /// that still holds the disk past <paramref name="wait"/> leaves the steps where they are (logged).
+        /// </summary>
+        private void DrainNow(TimeSpan wait)
+        {
+            if (!Monitor.TryEnter(m_DiskGate, wait))
+            {
+                GameLog.Warn("UniSpring Data: the disk was still busy when the game closed; waiting documents may not be saved.");
+                return;
+            }
+
+            try
+            {
+                while (true)
+                {
+                    lock (m_Gate)
+                    {
+                        if (m_Queue.Count == 0)
+                            return;
+                        if (m_Stranded)
+                        {
+                            DropAllStranded();
+                            return;
+                        }
+                    }
+
+                    Exception refusal;
+                    if (TryLand(1, out refusal))
+                        continue;
+                    if (refusal is StepCommittedException)
+                        continue; // stranded now: the next round drops the rest
+                    DropFirstStep(refusal);
+                }
+            }
+            finally
+            {
+                Monitor.Exit(m_DiskGate);
             }
         }
 
@@ -659,12 +704,14 @@ namespace UniSpring.Data
                 catch (Exception exception)
                 {
                     refusal = exception;
-                    if (exception is StepCommittedException)
+                    var committed = exception as StepCommittedException;
+                    if (committed != null)
                     {
                         lock (m_Gate)
                         {
                             m_Stranded = true;
-                            m_StrandedThrough = last;
+                            if (!committed.EarlierStep)
+                                m_StrandedThrough = last; // these steps are in the committed journal
                         }
                     }
 

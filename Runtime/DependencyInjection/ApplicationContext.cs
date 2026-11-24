@@ -59,6 +59,7 @@ namespace UniSpring.DependencyInjection
         private readonly AopProxyFactory m_Aop;
 
         private bool m_Disposed;
+        private bool m_Disposing;
 
         /// <summary>Root only: the lifecycle beans started, in start order.</summary>
         private readonly List<ILifecycle> m_Started = new List<ILifecycle>();
@@ -432,9 +433,12 @@ namespace UniSpring.DependencyInjection
         {
             AssertOwningThread();
 
-            if (m_Disposed)
+            // A Stop that disposes the container (it may: the container can be injected) must not stop everything
+            // again; the beans stay usable until every Stop has run.
+            if (m_Disposed || m_Disposing)
                 return;
 
+            m_Disposing = true;
             Exception disposeFailure = StopLifecycle();
             m_Disposed = true;
 
@@ -518,9 +522,12 @@ namespace UniSpring.DependencyInjection
         }
 
         /// <summary>
-        /// Every bean assignable to <paramref name="contract"/> that this scope can resolve, in bean order (registered
-        /// instances first). Unlike <see cref="GetAll{T}"/> it skips beans of a scope this one is not inside (a Scene
-        /// bean seen from the root): for infrastructure that collects beans by role, such as listeners and tickables.
+        /// The beans this scope owns or inherits that are assignable to <paramref name="contract"/>, in bean order
+        /// (registered instances first), each handed out as <paramref name="contract"/> (through its proxy when it
+        /// has advised methods). Unlike <see cref="GetAll{T}"/> it skips Transient beans (they belong to a consumer,
+        /// and collecting them would create instances nobody owns) and beans of a scope this one is not inside (a
+        /// Scene bean seen from the root): for infrastructure that collects beans by role, such as lifecycle beans,
+        /// listeners and tickables.
         /// </summary>
         internal IReadOnlyList<object> GetAllInScope(Type contract)
         {
@@ -536,7 +543,7 @@ namespace UniSpring.DependencyInjection
                     if (!contract.IsInstanceOfType(registered) || seen.Contains(registered))
                         continue;
                     seen.Add(registered);
-                    result.Add(registered);
+                    result.Add(AdviseRegistered(registered, contract));
                 }
             }
 
@@ -544,12 +551,19 @@ namespace UniSpring.DependencyInjection
             for (var index = 0; index < candidates.Count; index++)
             {
                 var candidate = candidates[index];
-                if (candidate.Lifetime != BeanLifetime.Transient && FindScopeOwner(candidate.Lifetime) == null)
+                if (candidate.Lifetime == BeanLifetime.Transient || FindScopeOwner(candidate.Lifetime) == null)
                     continue;
-                result.Add(Resolve(candidate));
+                result.Add(Advise(Resolve(candidate), contract));
             }
 
             return result;
+        }
+
+        /// <summary>The bean as <paramref name="contract"/>: through its proxy when that interface has advised methods.</summary>
+        internal object AdviseAs(object instance, Type contract)
+        {
+            AssertOwningThread();
+            return Advise(instance, contract);
         }
 
         private void WarmUp()
@@ -578,7 +592,7 @@ namespace UniSpring.DependencyInjection
         }
 
         /// <summary>Registered instances assignable to the contract first, then every bean.</summary>
-        private IReadOnlyList<object> GetAll(Type contract)
+        private IReadOnlyList<object> GetAll(Type contract, bool ownTransients = false)
         {
             var result = new List<object>();
             var seen = new List<object>();
@@ -595,7 +609,13 @@ namespace UniSpring.DependencyInjection
 
             var candidates = FindCandidates(contract);
             for (var index = 0; index < candidates.Count; index++)
-                result.Add(Advise(Resolve(candidates[index]), contract));
+            {
+                var instance = Resolve(candidates[index]);
+                // A transient kept by something this scope owns (a strategy registry) belongs to the scope.
+                if (ownTransients && candidates[index].Lifetime == BeanLifetime.Transient && instance is IDisposable disposable)
+                    m_Disposables.Add(disposable);
+                result.Add(Advise(instance, contract));
+            }
 
             return result;
         }
@@ -875,6 +895,14 @@ namespace UniSpring.DependencyInjection
             try
             {
                 registry = CreateStrategyRegistry(registryType);
+                if (!m_Aop.IsReady)
+                {
+                    // Built for an interceptor's dependency chain: its strategies are not proxied (that is
+                    // reported). It is not kept, so the registry handed out later holds the proxies.
+                    m_StrategyRegistries.Remove(registryType);
+                    return registry;
+                }
+
                 m_StrategyRegistries[registryType] = registry;
                 return registry;
             }
@@ -906,7 +934,7 @@ namespace UniSpring.DependencyInjection
         {
             var arguments = registryType.GetGenericArguments();
             var strategyType = arguments[1];
-            var beans = GetAll(strategyType);
+            var beans = GetAll(strategyType, true);
             var strategyArray = Array.CreateInstance(strategyType, beans.Count);
             for (var index = 0; index < beans.Count; index++)
                 strategyArray.SetValue(beans[index], index);

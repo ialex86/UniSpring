@@ -17,7 +17,8 @@ your own build.
 | `[Repository]` and `[Catalog]` interfaces (`UniSpring.Data`) | Not available yet: they are run-time proxies. A source generator is planned |
 | Code stripping | `link.xml` is generated; verify stripping and AOT behavior in a player build |
 | `logging.properties` on Android / WebGL | Ship it as a `Resources` text asset |
-| Everything else (DI, scopes, strategies, logging) | No additional configuration currently expected; IL2CPP compatibility is unverified |
+| DI, scopes, strategies, logging, lifecycle, events, ticks, typed settings, explicit stores | No runtime proxy requirement for these roles alone; linker/AOT and platform I/O behavior remain unverified |
+| FileDocumentStore | Verify worker threads, filesystem access, shutdown and recovery on each target; do not assume WebGL supports this backend |
 
 ## 1. Replace `[Transactional]` with `Run` / `RunAsync`
 
@@ -78,6 +79,8 @@ public sealed class Shop : IShop
 Your `ITransactionManager` implementation does not change. If the project
 targets both backends, use `Run` / `RunAsync` everywhere: one code path, no
 platform differences.
+
+Removing `[Transactional]` is not enough for applications that inject generated `[Repository]` or `[Catalog]` interfaces. Provide ordinary implementations of the required contracts and avoid relying on the runtime provider to generate them. Test explicit stores and typed settings on the actual target; generated linker metadata cannot prove AOT generic instantiations or filesystem support.
 
 To find what is left, search the project for `[Transactional` and for classes
 that implement `IMethodInterceptor` or derive from `ScopeInterceptor`.

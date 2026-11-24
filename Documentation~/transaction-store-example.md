@@ -2,7 +2,7 @@
 
 [Back to transactions](transactions.md)
 
-UniSpring wraps calls in transaction boundaries; it does not implement storage. The following in-memory counter illustrates an application-owned manager that stages a delta, joins nested work, commits only at the root and discards changes on rollback. This is an educational example, not a durable save system or a general concurrent transaction manager. It supports sequential nested calls within a logical flow; do not use parallel work inside one transaction. No Unity API is used in completion callbacks.
+UniSpring.Data already provides file and in-memory document stores. This optional example illustrates a custom application-owned transaction manager for a different kind of state: an in-memory counter. It stages a delta, joins sequential nested calls, commits at the root and discards changes on rollback. It is neither a durable save system nor a general concurrent transaction manager. Do not use parallel work within one transaction or Unity API in completion callbacks.
 
 Put this class in an assembly referencing `UniSpring.DependencyInjection` and `UniSpring.Transactions`. `[Service]` and `[Primary]` make the manager available to the container; do not also register a separate instance unless you deliberately want an override.
 

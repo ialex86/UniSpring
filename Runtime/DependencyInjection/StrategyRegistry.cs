@@ -10,7 +10,8 @@ namespace UniSpring.DependencyInjection
 
     /// <summary>
     /// Immutable snapshot of the strategy instances known when it was built, transient strategies included:
-    /// a lookup returns the same instance for the lifetime of the registry.
+    /// a lookup returns the same instance for the lifetime of the registry. The scope that built it owns its
+    /// transient strategies and disposes them with itself.
     /// </summary>
     public sealed class StrategyRegistry<TKey, TStrategy>
         where TStrategy : IKeyedStrategy<TKey>

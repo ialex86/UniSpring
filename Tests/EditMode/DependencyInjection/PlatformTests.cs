@@ -89,6 +89,59 @@ namespace UniSpring.DependencyInjection.Tests
         }
 
         [Component]
+        [Lifetime(BeanLifetime.Transient)]
+        public sealed class TransientStarter : ILifecycle
+        {
+            public static int Starts;
+
+            public void Start() => Starts++;
+
+            public void Stop()
+            {
+            }
+        }
+
+        [Test]
+        public void A_Transient_Lifecycle_Bean_Is_Not_Made_To_Be_Started()
+        {
+            TransientStarter.Starts = 0;
+            var context = ApplicationContext.BuildFromTypes(new[] { typeof(TransientStarter) });
+
+            Assert.AreEqual(0, TransientStarter.Starts, "a transient belongs to whoever asks for it");
+            context.Dispose();
+        }
+
+        [Component]
+        public sealed class ClosesTheGame : IDisposable
+        {
+            public static int Disposed;
+            private readonly ApplicationContext m_Context;
+
+            public ClosesTheGame(ApplicationContext context)
+            {
+                m_Context = context;
+            }
+
+            public void Dispose()
+            {
+                Disposed++;
+                m_Context.Dispose();
+            }
+        }
+
+        [Test]
+        public void Disposing_The_Container_From_A_Bean_Being_Disposed_Does_Nothing_More()
+        {
+            ClosesTheGame.Disposed = 0;
+            var context = ApplicationContext.BuildFromTypes(new[] { typeof(ClosesTheGame) });
+            context.Get<ClosesTheGame>();
+
+            context.Dispose();
+
+            Assert.AreEqual(1, ClosesTheGame.Disposed);
+        }
+
+        [Component]
         public sealed class NeedsContext
         {
             public readonly ApplicationContext Context;
@@ -249,6 +302,48 @@ namespace UniSpring.DependencyInjection.Tests
             context.Dispose();
         }
 
+        [Component]
+        [Order(5)]
+        public sealed class LaterEarlyPublisher
+        {
+            public LaterEarlyPublisher(IEventPublisher events, EarlyPublisher first)
+            {
+                events.Publish(new Purchase { Item = "second" });
+            }
+        }
+
+        [Component]
+        [Order(9)]
+        public sealed class EchoListener : IEventListener<Purchase>
+        {
+            private readonly Journal m_Journal;
+            private readonly IEventPublisher m_Events;
+
+            public EchoListener(Journal journal, IEventPublisher events)
+            {
+                m_Journal = journal;
+                m_Events = events;
+            }
+
+            public void On(Purchase evt)
+            {
+                m_Journal.Lines.Add("echo " + evt.Item);
+                if (evt.Item == "early")
+                    m_Events.Publish(new Purchase { Item = "echoed" });
+            }
+        }
+
+        [Test]
+        public void Early_Events_Are_Delivered_In_The_Order_They_Were_Published()
+        {
+            var journal = new Journal();
+            var context = Events(journal, typeof(LaterEarlyPublisher), typeof(EarlyPublisher), typeof(EchoListener));
+
+            Assert.AreEqual(new[] { "echo early", "echo second", "echo echoed" }, journal.Lines,
+                            "an event published while the early ones are delivered waits for them");
+            context.Dispose();
+        }
+
         [Test]
         public void An_Event_Published_While_The_Container_Builds_Is_Delivered_When_It_Starts()
         {
@@ -347,6 +442,58 @@ namespace UniSpring.DependencyInjection.Tests
 
             Assert.AreEqual(new[] { "race 1", "meter", "race 1" }, journal.Lines);
             Assert.Throws<ArgumentException>(() => runner.Add(new object()));
+            context.Dispose();
+        }
+
+        [Test]
+        public void Removing_A_Registration_Of_A_Bean_Keeps_The_Bean_Ticking()
+        {
+            var journal = new Journal();
+            var context = Ticks(journal, typeof(Race));
+            var runner = (TickRunner)context.Get<ITickRegistry>();
+            var race = context.Get<Race>();
+
+            var registration = runner.Add(race);
+            runner.RunTick(1f);
+            registration.Dispose();
+            runner.RunTick(1f);
+
+            Assert.AreEqual(new[] { "race 1", "race 1" }, journal.Lines, "ticked once a frame, and still after");
+            context.Dispose();
+        }
+
+        /// <summary>Equal to every other meter: the registry must still tell them apart.</summary>
+        private sealed class EqualMeter : ITickable
+        {
+            private readonly Journal m_Journal;
+            private readonly string m_Name;
+
+            public EqualMeter(Journal journal, string name)
+            {
+                m_Journal = journal;
+                m_Name = name;
+            }
+
+            public void Tick(float deltaTime) => m_Journal.Lines.Add(m_Name);
+
+            public override bool Equals(object obj) => obj is EqualMeter;
+
+            public override int GetHashCode() => 1;
+        }
+
+        [Test]
+        public void Each_Registration_Removes_Only_Its_Own_Object()
+        {
+            var journal = new Journal();
+            var context = Ticks(journal);
+            var runner = (TickRunner)context.Get<ITickRegistry>();
+            var first = runner.Add(new EqualMeter(journal, "first"));
+            runner.Add(new EqualMeter(journal, "second"));
+
+            first.Dispose();
+            runner.RunTick(1f);
+
+            Assert.AreEqual(new[] { "second" }, journal.Lines);
             context.Dispose();
         }
 

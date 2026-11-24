@@ -101,6 +101,128 @@ namespace UniSpring.Transactions.Tests
             Assert.Contains("receipt 1", m_Received.Lines);
         }
 
+        /// <summary>A transaction whose commit or dispose the disk refuses.</summary>
+        private sealed class RefusingManager : ITransactionManager
+        {
+            public bool FailCommit;
+            public bool FailDispose;
+
+            public ITransaction Begin() => new Refusing(this);
+
+            private sealed class Refusing : ITransaction
+            {
+                private readonly RefusingManager m_Owner;
+
+                public Refusing(RefusingManager owner)
+                {
+                    m_Owner = owner;
+                }
+
+                public void Commit()
+                {
+                    if (m_Owner.FailCommit)
+                        throw new InvalidOperationException("the commit failed");
+                }
+
+                public void Rollback()
+                {
+                }
+
+                public void Dispose()
+                {
+                    if (m_Owner.FailDispose)
+                        throw new InvalidOperationException("the dispose failed");
+                }
+            }
+        }
+
+        [Test]
+        public void A_Commit_That_Fails_Drops_The_Held_Events()
+        {
+            var transactions = new RefusingManager { FailCommit = true };
+
+            Assert.Throws<InvalidOperationException>(() => transactions.Run(() => m_Events.Publish(new Paid { Amount = 7 })));
+
+            Assert.AreEqual(new[] { "meter 7" }, m_Received.Lines, "nothing was committed");
+            Assert.IsFalse(TransactionSynchronization.IsActive);
+        }
+
+        [Test]
+        public void A_Dispose_That_Throws_Still_Ends_The_Transaction_Boundary()
+        {
+            var transactions = new RefusingManager { FailDispose = true };
+
+            Assert.Throws<InvalidOperationException>(() => transactions.Run(() => m_Events.Publish(new Paid { Amount = 8 })));
+
+            Assert.IsFalse(TransactionSynchronization.IsActive, "the flow is not left inside a transaction");
+            Assert.AreEqual(new[] { "meter 8", "receipt 8" }, m_Received.Lines, "the commit happened");
+            m_Events.Publish(new Paid { Amount = 9 });
+            Assert.Contains("receipt 9", m_Received.Lines, "later events are not held back");
+        }
+
+        [Test]
+        public void Work_Registered_After_The_Transaction_Ended_Runs_At_Once()
+        {
+            var lines = new List<string>();
+            System.Threading.Tasks.Task late = null;
+            var gate = new System.Threading.ManualResetEventSlim();
+            m_Transactions.Run(() =>
+            {
+                // A task started inside the transaction shares its flow and outlives it.
+                late = System.Threading.Tasks.Task.Run(() =>
+                {
+                    gate.Wait();
+                    TransactionSynchronization.AfterCommit(() => lines.Add("late"));
+                });
+            });
+
+            gate.Set();
+            late.GetAwaiter().GetResult();
+            Assert.AreEqual(new[] { "late" }, lines, "run at once, not held by a transaction that is over");
+        }
+
+        [Component]
+        public sealed class EarlyPayer
+        {
+            public EarlyPayer(IEventPublisher events)
+            {
+                events.Publish(new Paid { Amount = 3 });
+            }
+        }
+
+        private ApplicationContext BuildWithEarlyPayer()
+            => ApplicationContext.Build(
+                new[] { typeof(EventPublisher), typeof(AfterCommitDeferral), typeof(Receipt), typeof(Meter), typeof(EarlyPayer) },
+                scope => scope.RegisterInstance(m_Received));
+
+        [Test]
+        public void An_Event_Published_While_Building_Inside_A_Transaction_Reaches_After_Commit_Listeners_On_Commit()
+        {
+            ApplicationContext built = null;
+            m_Transactions.Run(() =>
+            {
+                built = BuildWithEarlyPayer();
+                Assert.AreEqual(new[] { "meter 3" }, m_Received.Lines, "the receipt waits for the commit");
+            });
+
+            Assert.AreEqual(new[] { "meter 3", "receipt 3" }, m_Received.Lines);
+            built.Dispose();
+        }
+
+        [Test]
+        public void An_Event_Published_While_Building_Inside_A_Rolled_Back_Transaction_Never_Reaches_After_Commit_Listeners()
+        {
+            ApplicationContext built = null;
+            Assert.Throws<InvalidOperationException>(() => m_Transactions.Run(() =>
+            {
+                built = BuildWithEarlyPayer();
+                throw new InvalidOperationException("the purchase failed");
+            }, true));
+
+            Assert.AreEqual(new[] { "meter 3" }, m_Received.Lines);
+            built.Dispose();
+        }
+
         [Test]
         public void Outside_A_Transaction_Events_Are_Delivered_At_Once()
         {

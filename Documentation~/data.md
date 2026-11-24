@@ -85,7 +85,7 @@ using UniSpring.Data;
 using UniSpring.DependencyInjection;
 
 [Serializable]
-internal sealed class WalletRecord { public long balance; }
+internal sealed class WalletRecord { public int schemaVersion = 2; public long balance; }
 
 [Serializable]
 internal sealed class ParkedCarRecord
@@ -191,7 +191,7 @@ internal sealed class GarageService : IGarage
         if (read.IsBroken)
             throw new InvalidOperationException("The wallet save is broken: " + read.Error);
         var wallet = read.Value ?? new Wallet(1000);
-        if (wallet.Balance < price)
+        if (price <= 0 || wallet.Balance < price)
             throw new InvalidOperationException("Not enough money.");
 
         m_Wallet.Save(new Wallet(wallet.Balance - price));
@@ -223,12 +223,7 @@ game can rebuild. For data the player must not lose, use `Read`: it returns a
 | `Unreadable` | The serializer or the mapper failed |
 | `Invalid` | A validator refused the object |
 
-Either way, once a read has found a document broken, `Save` over it throws
-`DocumentDamagedException`: `Load() ?? new Wallet(1000)` followed by a save can
-no longer replace the player's broken save with a fresh one by accident. Call
-`Delete` first to replace it on purpose. Declare an
-interface for each, even without extra methods: the repository is then explicit
-in every constructor.
+After a repository detects broken data on read, saving the same id through that repository is refused with `DocumentDamagedException`. This is a session-local, per-repository-interface guard, not a durable quarantine: it does not cover unread documents, other interfaces, direct store writes or a restart. A later successful read can clear it. Use strict `Read()` and initialize defaults only for `Missing`; keep damaged data for recovery and ask for explicit consent before `Delete` and replacement. Declare a separate interface for each repository so its role is clear in constructors.
 
 The container creates one implementation per interface and shares it. Ask for
 the interface in a constructor; nothing has to be registered.
@@ -245,17 +240,12 @@ A method added to a repository interface is implemented from its name:
 | `ExistsBy` | `bool` | Whether any matches |
 | `DeleteBy` | `void` or `int` | Deletes the matches (and returns how many) |
 
-After the prefix come public fields or properties of the stored type, joined by
-`And`, one parameter per member, in the same order. Members are compared for
-equality. Every stored object is loaded and compared in memory: there are no
-indexes, which suits game saves of tens or hundreds of documents.
+After the prefix come exact, case-sensitive public field or property names of the stored domain type, joined by `And`, with one parameter per member in the same order. For a field named `itemId`, expose a public `ItemId` property if you want the idiomatic `FindByItemId` spelling. Members are compared for equality. There are no indexes: full-result queries scan readable documents.
 
 `ExistsBy` and a `FindBy` that returns one object stop at the first match; the
 others read every document.
 
-A method whose name or parameters do not fit is refused when the repository is
-created, that is when the container builds, with the interface, the method and
-the reason in the message.
+Invalid query signatures are rejected when the repository is first created (during warm-up if an Application bean needs it, otherwise at first resolution). The exception identifies the contract and method.
 
 Reading, deserializing, mapping and validating run on the caller's thread,
 which is usually the main thread: only writing to disk is moved off it. Keep
@@ -278,8 +268,7 @@ Every `IDocumentValidator<T>` bean for the type runs:
 
 - on save, an object with errors is not stored; the caller gets
   `DocumentValidationException` with the list of errors;
-- on load, a stored object with errors is logged through `GameLog` and read as
-  missing, so one bad document never stops the game.
+- on load, validation errors are logged through `GameLog`; lenient reads return null and strict reads report `Invalid`. The caller decides whether the game can continue.
 
 The id is passed to the validator, so a rule such as "the owner inside the
 document matches the id it is stored under" belongs here too.
@@ -292,28 +281,32 @@ read back. A document the serializer cannot read is logged and read as missing.
 
 ## Migrations
 
-Stored documents carry no version. The number of the last migration applied is
-kept in its own document, `UniSpring/migrations`, as in Flyway.
+The framework tracks the last applied migration in `UniSpring/migrations`, rather than injecting a schema version into every record. Your record format should include an explicit version when a transformation cannot safely distinguish old and new shapes. The example below assumes that the released v1 record already had `schemaVersion: 1`; the v2 writer shown above emits `schemaVersion: 2`. It intentionally refuses ambiguous unversioned records instead of guessing.
 
 ```csharp
 [Serializable]
-internal sealed class WalletRecordV1 { public int coins; }
+internal sealed class WalletMigrationProbe
+{
+    public int schemaVersion;
+    public long coins;
+}
 
 [Migration(2)]
 internal sealed class WalletCoinsToBalance : IMigration
 {
     public void Run(IMigrationStore store)
     {
-        var old = store.Load<WalletRecordV1>("Wallet");
-        if (old == null)
+        var old = store.Load<WalletMigrationProbe>("Wallet");
+        if (old == null || old.schemaVersion == 2)
             return;
-        store.Save("Wallet", new WalletRecord { balance = old.coins });
+        if (old.schemaVersion != 1 || old.coins < 0)
+            throw new InvalidOperationException("Unknown or invalid wallet format; preserve the save for recovery.");
+        store.Save("Wallet", new WalletRecord { schemaVersion = 2, balance = old.coins });
     }
 }
 ```
 
-- Migrations are beans; they run while the container warms up, before the
-  ordinary beans, in ascending order, each only once.
+- Migrations are beans; they run during warm-up in ascending version order, for versions newer than the recorded version. Recovery from an older metadata backup can run a migration again. Keep storage-dependent initialization after migration.
 - A migration sees records (old and new shapes), not domain objects: no mappers
   or validators run.
 - When the store has transactions, a migration and the new number are written
@@ -325,10 +318,7 @@ internal sealed class WalletCoinsToBalance : IMigration
 Keep the old record class in the code for as long as saves of that shape can
 exist.
 
-Write migrations so that running one twice does no harm (check the old shape
-before converting, as above). If the file holding the migration record is
-damaged, the store reads its backup, which may hold an older number; the
-migrations after it then run again, and a warning says so.
+Write replay-safe migrations and test them on old, current, missing, malformed and unknown-version records. An old DTO deserializing successfully does not prove the stored shape is old: serializers may substitute default values for absent fields. Never infer that a zero balance identifies a legacy record. For already shipped unversioned formats, inspect a reliable discriminator or use an explicit recovery/import tool before adopting this example. If migration metadata falls back to an older backup, the package logs a warning and may rerun migrations.
 
 ## Where documents live
 
@@ -346,9 +336,7 @@ a name; the container refuses it. `Documents` and `UniSpring` are reserved.
 `IDocumentStore` is the port to the disk: `Read`, `Write`, `Delete` and
 `Names`, on bytes. Its contract:
 
-- a write may return before the disk has it (a store may write on its own
-  thread, so the game never waits for the disk), but every later read sees the
-  new content;
+- a write may return before reaching disk. Outside a transaction, subsequent reads see the accepted change; inside a transaction the change is visible to its own flow until the outer commit. This is not a disk-durability guarantee;
 - a store that supports transactions also implements `ITransactionManager`:
   writes in a transaction are read by its own flow at once and by everyone else
   after the outermost commit; a rollback drops them.
@@ -363,32 +351,29 @@ registers it as the container's `IDocumentStore` and `ITransactionManager`, and
 closes it when the application quits (in the editor, when Play stops). The
 default root is `Application.persistentDataPath/Saves`.
 
-- **No freezes.** A write or delete returns at once and is readable at once;
-  the store's own thread puts the waiting changes on disk shortly after, all of
-  them as one step. Repeated writes of a document collapse into the last one.
+- **Background writes.** Accepted changes are visible before the writer lands them. Repeated writes may be coalesced. Reads, serialization, mapping, validation, lock contention, reset and shutdown can still block; profile realistic workloads and keep large scans out of ticks.
 - **Atomic files.** A write goes to a temporary file and then replaces the
   document; the previous copy stays as a `.bak`, and every copy carries a
   SHA-256. A read that finds a document damaged returns the backup.
 - **Transactions.** The documents of one transaction land together: their new
   contents are written first, then a journal (the commit point), then they are
-  put in place. A journal a crash left behind is completed the next time the
-  store opens; an incomplete one is dropped.
+  put in place. The journal is written under a temporary name and moved in
+  place, so it is either whole or absent. A journal a crash left behind is
+  completed the next time the store opens. One the disk cannot read stays and
+  is tried again; a damaged one is renamed to `.corrupt` and logged as an
+  error, never deleted. This is the recovery protocol, not a guarantee against
+  every filesystem fault or power loss: test the target platform and keep the
+  backups.
 - **Order.** Changes land in the order they were made, so the disk always holds
   a state the game was in. When the disk refuses (full, file held by another
   program), the changes stay readable and are tried again with a growing pause;
   nothing later lands before them.
-- **Quitting.** `Close(timeout)` waits for the waiting changes and stops the
-  thread; after it, writes go to disk on the caller's thread before they return,
-  so saves made while objects are destroyed are not lost. Changes the disk
-  still refuses are logged.
-- **Saving what the disk takes.** Only while closing, a step the disk keeps
-  refusing is left out (and logged) so the steps after it are still saved:
-  losing every save for one refused file is worse than breaking the order once.
-  A transaction whose journal is already written is never left half-way: it is
-  completed the next time the store opens. What was left out is counted in
-  `LostChanges`, and `WaitForDisk` and `IsIdle` then report false.
+- **Quitting.** `Close(timeout)` attempts to drain pending work and stop the writer; later writes are synchronous. Timeout is not a strict wall-clock bound when filesystem I/O is blocked. Do not rely on shutdown as the only save checkpoint.
+- **Failure reporting.** During shutdown, refused steps may be discarded to permit later steps to land. `LostChanges` counts discarded changes; `WaitForDisk` and `IsIdle` remain false after a recorded loss in that session. Recovery of a stranded journal is best effort. Preserve the save directory and logs on failure.
 - `WaitForDisk(timeout)` and `IsIdle` tell whether the changes made so far are
   on disk, for tests and tools.
+
+  `WaitForDisk` is a synchronous check of the store's queued changes, not a power-loss durability guarantee. `AfterCommit` does not wait for it. Check the return value, `LostChanges` and logs; avoid blocking the frame loop on this method.
 
 Files: `<root>/<area>/<hex of the name>.doc`, with `.bak` next to it and
 journals in `<root>/.journal`. Areas are segments of letters, digits, `-` and
@@ -427,8 +412,11 @@ internal sealed class NewGame : INewGame
   drops its state when the saves are cleared.
 - Inside an open transaction of the calling flow `DeleteAll` throws and changes
   nothing. Open transactions of other flows are dropped: they belong to the old
-  game, and what their flows write until they end is lost.
-- A write another thread makes after the clear began is kept.
+  game, what their flows write until they end is lost, and their `Commit`
+  throws, so the old game's code learns that nothing was saved.
+- A write another thread makes after the clear began is kept. Still, prefer to
+  start a new game from a quiet point (no gameplay transactions in flight): a
+  dropped transaction is consistent, but the use case that owned it fails.
 
 ### InMemoryDocumentStore
 
@@ -450,7 +438,7 @@ public void A_Bought_Car_Belongs_To_The_Buyer()
     var cars = data.Repository<ICarRepository>();
     var garage = new GarageService(data.Repository<IWalletDocument>(), cars);
 
-    garage.BuyCar("alex", "car-7", "Coupe", 60);
+    data.Transactions.Run(() => garage.BuyCar("alex", "car-7", "Coupe", 60), rollbackOnError: true);
 
     Assert.AreEqual(1, cars.CountByOwner("alex"));
 }
@@ -478,9 +466,13 @@ public interface IShopCatalog : ICatalog<ShopItem>
 
 `ICatalog<T>` gives `Find`, `Exists`, `All` and `Ids`; query methods work as in
 a repository, but there is no `DeleteBy`. Items go through the serializer, the
-type's mapper and its validators once, when the container starts. A broken item
+type's mapper and its validators once, when the catalog is loaded. A broken item
 is a bug in the game's data: it stops the start and the error names the asset.
-Catalogs are implemented by run-time proxies: Mono only.
+A catalog is loaded on its first resolution: one injected into an application
+bean is checked while the application starts, one used only by a Scene bean
+when that scene's scope is built. `All` and `Ids` are read-only. Two
+mappers for one type stop the start. Catalogs are implemented by run-time
+proxies: Mono only.
 
 ## Settings
 
@@ -507,10 +499,11 @@ internal sealed class Steering : ISteering
   A class that derives from `ScriptableObject` is loaded as that asset, so it
   can be edited in the inspector.
 - A missing resource gives the class's defaults; `Required = true` makes it
-  stop the start instead.
+  stop the start (fail the resolution) instead. A `ScriptableObject` made for
+  the defaults is destroyed with the container.
 - `IDocumentValidator<T>` checks the settings; invalid settings stop the start.
 - An instance registered with `RegisterInstance` wins over the resource (tests,
-  overrides).
+  overrides); it is not validated, its owner is responsible for that.
 
 Catalogs and settings read Unity's `Resources` unless an `IResourceSource`
 bean is registered (Addressables, files, a test double).

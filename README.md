@@ -29,7 +29,7 @@ The goal is to reduce integration mistakes, limit the scope of changes and impro
 
 ## Features
 
-Dependency Injection, declarative transactions and structured logging for Unity, inspired by the Spring Framework.
+Application architecture for Unity: dependency injection, lifecycle, events, game-loop integration, transactions, persistence, read-only content, configuration and logging.
 
 - Constructor injection with `[Service]`, `[Component]` and `[Strategy]` beans.
 - Application, Scene and Transient lifetimes, plus child scopes.
@@ -38,10 +38,9 @@ Dependency Injection, declarative transactions and structured logging for Unity,
 - Lifecycle hooks, application events (with after-commit delivery), beans
   ticked by the player loop without MonoBehaviour hosts, and profiles.
 - Declarative transactions with `[Transactional]` and `ITransactionManager`.
-- Spring Data-style repositories for saves: declare a `[Repository]` interface,
-  get query methods by name, mappers, validators and migrations, over a file
-  store that writes in the background with crash-safe transactions. Read-only
-  catalogs and settings bound to `Resources`.
+- Spring Data-style repositories with derived equality queries, mappers, validators and migrations; file and in-memory stores.
+- Read-only content catalogs and typed settings bound to `Resources` (or a custom resource source).
+- Background file writes, checksums, backups and journal-based recovery. Logical commit is not disk durability; see the [storage guarantees](Documentation~/data.md#filedocumentstore).
 - Optional module-boundary policy (`*.Api` assemblies only).
 - `GameLog` facade with per-source levels, lazy messages, exception entries and
   pluggable sinks.
@@ -50,10 +49,7 @@ Dependency Injection, declarative transactions and structured logging for Unity,
 
 Requires Unity 6 (`6000.0` or newer). No third-party dependencies.
 
-**IL2CPP.** One thing changes: `[Transactional]` (and any other method
-interception) needs Mono, so on IL2CPP replace it with
-`ITransactionManager.Run(...)` / `RunAsync(...)`. Linker preservation is generated
-automatically, but AOT compatibility is not guaranteed. Build guidance is in
+**Platform status.** Unity 6 with Mono is the supported starting point. `[Transactional]`, custom runtime advice, `[Repository]` and `[Catalog]` use runtime proxies and are unavailable on IL2CPP. Explicit `ITransactionManager.Run(...)` / `RunAsync(...)` avoids transaction proxies, but does not replace generated repositories or catalogs. Linker preservation is generated; AOT compatibility of the remaining features is unverified. Build guidance is in
 [Documentation~/il2cpp.md](Documentation~/il2cpp.md). IL2CPP builds have not
 been tested yet.
 
@@ -108,6 +104,8 @@ when you want to own the composition root yourself.
 
 For a custom asmdef, reference `UniSpring.DependencyInjection` (and `UniSpring.Logging` if using `GameLog`). Put the `GameBootstrap` MonoBehaviour in `GameBootstrap.cs`, attach it to an active GameObject and enter Play Mode. The Console should show `Hello, UniSpring!`. Do not declare `Awake` in an `AutowiredMonoBehaviour` subclass; initialize injected dependencies in `OnDependenciesInjected()` instead.
 
+**Next:** follow the [shop walkthrough](Documentation~/getting-started.md) to combine services, repositories, a catalog, a transaction, events, Unity UI and tests. For migration from Java, use the [Spring cheat sheet](Documentation~/spring-cheatsheet.md). For agents, copy the application rules in [AGENTS.md](AGENTS.md).
+
 ## How does it compare?
 
 This comparison concerns the standard APIs, without custom scanners, third-party .NET extensions or additional architecture packages.
@@ -123,11 +121,22 @@ This comparison concerns the standard APIs, without custom scanners, third-party
 | Injection into Unity components | Manual / Inspector | Custom Unity integration | Component registration or explicit injection | `AutowiredMonoBehaviour` |
 | Post-injection initialization | Unity lifecycle / manual | Custom | Entry points / callbacks | `[PostConstruct]` / `OnDependenciesInjected()` |
 | Module-boundary enforcement | Custom / asmdef | Custom | Custom | Optional `ModuleBoundaryOptions` |
-| Method interception / declarative transactions | Custom | Not in the DI container | Not in the DI container | Built in (Mono only; application supplies the transaction manager) |
+| Start/stop lifecycle | Unity callbacks / custom | Generic Host (separate from DI) | Entry points | `ILifecycle` |
+| Game-loop callbacks | MonoBehaviour | Not part of DI | Tick entry points | `ITickable`, `ILateTickable`, `IFixedTickable` |
+| Application events | Custom / UnityEvent | Not part of DI | Custom / separate package | `IEventPublisher`, `IEventListener<T>` |
+| After-commit events | Custom | Not part of DI | Custom | `[AfterCommit]` (logical commit) |
+| Component profiles | Custom | Conditional registrations | Conditional registrations | `[Profile]`, `ContextOptions` |
+| Declarative repositories and derived queries | Custom | Not part of DI | Not part of DI | `[Repository]` (Mono) |
+| Save storage and migrations | Custom / PlayerPrefs | Not part of DI | Not part of DI | File / memory stores, `[Migration]` |
+| Read-only game content | Resources / custom | Not part of DI | Custom | `[Catalog]` (Mono) |
+| Typed settings | ScriptableObject / custom | Options (separate infrastructure) | Explicit registration | `[ConfigurationProperties]` |
+| Method interception / declarative transactions | Custom | Not in the DI container | Not in the DI container | Built in (Mono only); use the Data store or a custom manager |
 | Logging facade and routing | Unity logging API | Separate .NET logging infrastructure | Separate logging solution | `GameLog` and configurable sinks |
-| IL2CPP | Native Unity support | Not a Unity-specific container | Supported; see its AOT guidance | Not yet verified; runtime interception unavailable |
+| IL2CPP | Native Unity backend | Not a Unity-specific container | Supported; see its AOT guidance | Unverified; runtime advice, generated repositories and catalogs unavailable |
 
 .NET and VContainer already support keyed resolution. UniSpring's distinction is the automatically discovered, injectable registry keyed by the application's own domain values, without requiring consumers to resolve services from the container. The trade-off is more convention and a younger implementation.
+
+This is a comparison with the built-in DI container, not the entire .NET ecosystem: EF Core, Options, Hosting and other packages solve many related problems. Choose UniSpring when you want a coherent Spring-like application model rather than a minimal container; choose a mature Unity DI container if verified AOT support is a requirement.
 
 References: [Spring component scanning](https://docs.spring.io/spring/reference/core/beans/classpath-scanning.html), [.NET DI](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection), [VContainer](https://vcontainer.hadashikick.jp/).
 
@@ -359,9 +368,42 @@ This is a unit test of the rule and service, not a test of assembly scanning or 
 | Inject a collection and build a strategy map | `[Strategy]`, `IKeyedStrategy<TKey>`, `StrategyRegistry<TKey, TStrategy>` |
 | Spring AOP | `IMethodInterceptor` (Mono only) |
 | `@Transactional` | `[Transactional]` (Mono only; different default rollback policy) |
+| `Lifecycle` / `SmartLifecycle` (conceptual) | `ILifecycle` |
+| `@Profile` | `[Profile]` |
+| `ApplicationEventPublisher` / `@EventListener` | `IEventPublisher` / `IEventListener<T>` |
+| `@TransactionalEventListener` | `[AfterCommit]` (outside a transaction, immediate) |
+| Spring Data repositories and query derivation | `[Repository]`, `IRepository<T>`, `IDocument<T>`, `FindBy...` |
+| `@ConfigurationProperties` | `[ConfigurationProperties]` (resource binding) |
+| Flyway / Liquibase (conceptual) | `[Migration]`, `IMigration` |
+| Bean Validation (conceptual) | `IDocumentValidator<T>` |
+| No direct Spring counterpart | `[Catalog]`, `ICatalog<T>`, Unity tick interfaces |
 | Package / module architecture conventions | Optional API-assembly boundary policy |
 
 These are conceptual counterparts, not a promise of identical Spring semantics.
+
+## Beyond DI: a game application
+
+Here is a small excerpt from the [complete shop](Documentation~/getting-started.md) (model types and configuration are defined there):
+
+```csharp
+[Repository]
+public interface IInventoryRepository : IRepository<OwnedItem>
+{
+    IReadOnlyList<OwnedItem> FindByItemId(string itemId);
+}
+
+[Catalog("Shop/Items")]
+public interface IShopCatalog : ICatalog<ShopItem> { }
+
+[Component]
+[AfterCommit]
+public sealed class PurchaseLog : IEventListener<ItemPurchased>
+{
+    public void On(ItemPurchased evt) => UnityEngine.Debug.Log("Purchased " + evt.Id);
+}
+```
+
+The use case injects the repository, catalog and event publisher. It changes player data inside a transaction; independent listeners react after logical commit. A separate Unity adapter handles input and presentation. The full walkthrough includes the serializer, store setup, settings, domain mapper and validators, a purchase transaction, resources, and NUnit tests. This is the architectural workflow UniSpring aims to make predictable for developers and coding agents. The generated repositories, catalogs and advice used in the example require Mono.
 
 ## Documentation
 
@@ -371,6 +413,13 @@ These are conceptual counterparts, not a promise of identical Spring semantics.
 | [Transactions](Documentation~/transactions.md) | Understand commit/rollback and implement a transaction manager |
 | [Lifecycle, events and ticks](Documentation~/lifecycle-events-ticks.md) | Start and stop beans, publish events between modules, tick beans every frame, choose beans by profile |
 | [Data](Documentation~/data.md) | Store saves through repository interfaces, mappers, validators and migrations |
+| [Getting started](Documentation~/getting-started.md) | Build and test a complete shop with persistent state and events |
+| [Architecture](Documentation~/architecture.md) | Choose modules, lifetimes, explicit contracts and communication patterns |
+| [Spring cheat sheet](Documentation~/spring-cheatsheet.md) | Translate familiar Spring patterns and understand semantic differences |
+| [Catalogs and settings](Documentation~/catalogs-and-settings.md) | Load static content and typed configuration |
+| [Testing](Documentation~/testing.md) | Test rules, repository integration, transactions and Unity lifecycle separately |
+| [Configuration](Documentation~/configuration.md) | Configure profiles, scanning, logging and module boundaries |
+| [Troubleshooting](Documentation~/troubleshooting.md) | Diagnose injection, persistence, lifecycle and AOT failures |
 | [Logging](Documentation~/logging.md) | Configure levels, paths, sources, sinks and routing |
 | [IL2CPP](Documentation~/il2cpp.md) | Prepare and verify an AOT player build |
 | [AGENTS.md](AGENTS.md) | Apply the architecture conventions in AI-assisted development |
@@ -474,9 +523,9 @@ task completes. By default the transaction commits when the call ends, also
 when the method throws; set `RollbackOnError = true` when the store can discard
 its changes.
 
-The package has no store of its own. Implement `ITransactionManager` and
-`ITransaction`, then mark the manager `[Service]` and `[Primary]`, or register
-an instance before warm-up:
+For game saves, install `FileDocumentStore` from `UniSpring.Data` before warm-up; it also supplies the transaction manager. `InMemoryDocumentStore` is available for tests. See the [shop walkthrough](Documentation~/getting-started.md) for the complete setup.
+
+Only if you need a different storage backend, implement `ITransactionManager` and `ITransaction` and register your manager (for example, with the following composition hook). Do not install competing managers unintentionally. A successful logical commit can precede disk persistence.
 
 ```csharp
 RuntimeContext.Configure(context =>

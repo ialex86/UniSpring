@@ -15,6 +15,21 @@ These instructions apply to work on this repository. Projects consuming UniSprin
 - On Mono, advised calls must go through interfaces; self-invocation is not intercepted. For IL2CPP, avoid runtime advice and use explicit `ITransactionManager.Run` / `RunAsync`. The default transaction policy commits on exceptions; request rollback only if the store supports it. Never use `async void` for transaction work.
 - Keep container calls on their owning thread. Async transaction completion may occur away from Unity's main thread.
 
+## Data, events and lifecycle rules
+
+- Use `[Repository]` / `IRepository<T>` for collections of saved objects and `IDocument<T>` for singleton saves. Use `[Catalog]` for shipped immutable content; use `[ConfigurationProperties]` for typed settings. Do not invent a new save manager, resource loader or event bus when the existing contracts fit.
+- Install one store and serializer at the composition root. Keep domain models free of persistence details where useful; map to serializer-friendly records. Do not register competing managers, serializers or mappers.
+- Use `Read()` for critical state, initialize only for `Missing`, and never silently overwrite broken data. The damaged-save guard is per interface and session; explicit deletion is a recovery decision, not an automatic fallback.
+- Use versioned, replay-safe migrations. Test migration twice against actual serialized records and preserve unknown formats. Do not assume deserialization into an old DTO proves the old schema.
+- Use explicit rollback-on-error boundaries for multi-document changes. No parallel child tasks inside an ambient transaction. Independent writers use last-commit-wins, not isolation. Do not assume rollback reverses in-memory or Unity side effects.
+- Use application events for independent reactions, not as a substitute for direct calls when a dependency or return value is required. Use `[AfterCommit]` for ordinary post-commit reactions, not as a durable delivery guarantee. A transaction dropped by a save reset throws on commit; handle that as a cancelled use case.
+- Use Application beans for automatic lifecycle/listeners/ticks; Scene objects own disposable Subscribe/Add tokens. Infrastructure callbacks are called through AOP proxies like any other call. A failed Start must clean up its own partial work.
+- Use `[Profile]` and explicit context options for environment differences. Do not bypass strict collection scope or module boundary rules.
+- Keep Unity API calls on the main thread. Events run on the publisher/completion thread; marshal UI, audio and scene work when needed. Keep full scans, serialization-heavy work and disk waits out of frame ticks.
+- File writes are asynchronous during normal operation. Check `WaitForDisk`, `LostChanges` and logs at persistence checkpoints; do not promise durability on logical commit. Coordinate reset, shutdown and active work.
+- `[Repository]`, `[Catalog]` and runtime advice require Mono. Do not propose IL2CPP support based on EditMode tests or generated link.xml alone; use ordinary explicit implementations and verify the target build.
+- Read [architecture](Documentation~/architecture.md), [shop walkthrough](Documentation~/getting-started.md), [testing](Documentation~/testing.md) and the subsystem contract before introducing a new pattern. Test plain domain behavior, actual repository integration and container/Unity integration separately.
+
 ## Working on UniSpring itself
 
 - Read the relevant guide and implementation before changing API behavior. Do not silently change lifecycle, ownership, selection, proxy or transaction semantics.

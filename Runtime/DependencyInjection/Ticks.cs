@@ -47,6 +47,8 @@ namespace UniSpring.DependencyInjection
     {
         private readonly ApplicationContext m_Context;
         private readonly object m_Gate = new object();
+        private object[] m_Beans = new object[0];
+        private readonly List<Registration> m_Added = new List<Registration>();
         private ITickable[] m_Ticks = new ITickable[0];
         private ILateTickable[] m_LateTicks = new ILateTickable[0];
         private IFixedTickable[] m_FixedTicks = new IFixedTickable[0];
@@ -58,27 +60,26 @@ namespace UniSpring.DependencyInjection
 
         public void Start()
         {
-            var ticks = Beans<ITickable>();
-            var lateTicks = Beans<ILateTickable>();
-            var fixedTicks = Beans<IFixedTickable>();
+            var beans = new List<object>();
+            AddBeans(beans, typeof(ITickable));
+            AddBeans(beans, typeof(ILateTickable));
+            AddBeans(beans, typeof(IFixedTickable));
             lock (m_Gate)
             {
-                // Objects added before the start (from a constructor) follow the beans.
-                m_Ticks = Concat(ticks, m_Ticks);
-                m_LateTicks = Concat(lateTicks, m_LateTicks);
-                m_FixedTicks = Concat(fixedTicks, m_FixedTicks);
+                m_Beans = beans.ToArray();
+                Rebuild();
             }
 
             TickLoop.Attach(this);
         }
 
-        private T[] Beans<T>()
+        private void AddBeans(List<object> beans, Type contract)
         {
-            var beans = m_Context.GetAllInScope(typeof(T));
-            var result = new T[beans.Count];
-            for (var index = 0; index < beans.Count; index++)
-                result[index] = (T)beans[index];
-            return result;
+            foreach (var bean in m_Context.GetAllInScope(contract))
+            {
+                if (IndexOf(beans, bean) < 0)
+                    beans.Add(bean);
+            }
         }
 
         public void Stop()
@@ -86,9 +87,9 @@ namespace UniSpring.DependencyInjection
             TickLoop.Detach(this);
             lock (m_Gate)
             {
-                m_Ticks = new ITickable[0];
-                m_LateTicks = new ILateTickable[0];
-                m_FixedTicks = new IFixedTickable[0];
+                m_Beans = new object[0];
+                m_Added.Clear();
+                Rebuild();
             }
         }
 
@@ -98,8 +99,57 @@ namespace UniSpring.DependencyInjection
                 throw new ArgumentNullException(nameof(tickable));
             if (!(tickable is ITickable) && !(tickable is ILateTickable) && !(tickable is IFixedTickable))
                 throw new ArgumentException(tickable.GetType().FullName + " implements no tickable interface.", nameof(tickable));
-            AddTo(tickable);
-            return new Registration(this, tickable);
+            var registration = new Registration(this, tickable);
+            lock (m_Gate)
+            {
+                m_Added.Add(registration);
+                Rebuild();
+            }
+
+            return registration;
+        }
+
+        /// <summary>
+        /// Under the gate: the beans in bean order, then the added objects in the order they were added. An object
+        /// is ticked once however often it is there; each registration removes only itself, never a bean.
+        /// </summary>
+        private void Rebuild()
+        {
+            var all = new List<object>(m_Beans);
+            foreach (var registration in m_Added)
+            {
+                if (IndexOf(all, registration.Target) < 0)
+                    all.Add(registration.Target);
+            }
+
+            var ticks = new List<ITickable>();
+            var lateTicks = new List<ILateTickable>();
+            var fixedTicks = new List<IFixedTickable>();
+            foreach (var item in all)
+            {
+                if (item is ITickable tick)
+                    ticks.Add(tick);
+                if (item is ILateTickable late)
+                    lateTicks.Add(late);
+                if (item is IFixedTickable fixedTick)
+                    fixedTicks.Add(fixedTick);
+            }
+
+            m_Ticks = ticks.ToArray();
+            m_LateTicks = lateTicks.ToArray();
+            m_FixedTicks = fixedTicks.ToArray();
+        }
+
+        /// <summary>By reference: a tickable with its own Equals is still one object per registration.</summary>
+        private static int IndexOf(IList<object> items, object item)
+        {
+            for (var index = 0; index < items.Count; index++)
+            {
+                if (ReferenceEquals(items[index], item))
+                    return index;
+            }
+
+            return -1;
         }
 
         internal void RunTick(float deltaTime)
@@ -150,73 +200,38 @@ namespace UniSpring.DependencyInjection
             }
         }
 
-        private void AddTo(object tickable)
+        private void Remove(Registration registration)
         {
             lock (m_Gate)
             {
-                if (tickable is ITickable tick)
-                    m_Ticks = With(m_Ticks, tick);
-                if (tickable is ILateTickable late)
-                    m_LateTicks = With(m_LateTicks, late);
-                if (tickable is IFixedTickable fixedTick)
-                    m_FixedTicks = With(m_FixedTicks, fixedTick);
+                for (var index = 0; index < m_Added.Count; index++)
+                {
+                    if (!ReferenceEquals(m_Added[index], registration))
+                        continue;
+                    m_Added.RemoveAt(index);
+                    Rebuild();
+                    return;
+                }
             }
-        }
-
-        private void Remove(object tickable)
-        {
-            lock (m_Gate)
-            {
-                if (tickable is ITickable tick)
-                    m_Ticks = Without(m_Ticks, tick);
-                if (tickable is ILateTickable late)
-                    m_LateTicks = Without(m_LateTicks, late);
-                if (tickable is IFixedTickable fixedTick)
-                    m_FixedTicks = Without(m_FixedTicks, fixedTick);
-            }
-        }
-
-        private static T[] Concat<T>(T[] first, T[] second)
-        {
-            var list = new List<T>(first);
-            foreach (var item in second)
-            {
-                if (!list.Contains(item))
-                    list.Add(item);
-            }
-
-            return list.ToArray();
-        }
-
-        private static T[] With<T>(T[] items, T item)
-        {
-            var list = new List<T>(items) { item };
-            return list.ToArray();
-        }
-
-        private static T[] Without<T>(T[] items, T item)
-        {
-            var list = new List<T>(items);
-            list.Remove(item);
-            return list.ToArray();
         }
 
         private sealed class Registration : IDisposable
         {
             private TickRunner m_Owner;
-            private readonly object m_Tickable;
 
-            public Registration(TickRunner owner, object tickable)
+            public Registration(TickRunner owner, object target)
             {
                 m_Owner = owner;
-                m_Tickable = tickable;
+                Target = target;
             }
+
+            public object Target { get; }
 
             public void Dispose()
             {
                 var owner = m_Owner;
                 m_Owner = null;
-                owner?.Remove(m_Tickable);
+                owner?.Remove(this);
             }
         }
     }

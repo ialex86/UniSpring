@@ -32,10 +32,17 @@ namespace UniSpring.Data.Internal
     /// </summary>
     internal sealed class StepCommittedException : Exception
     {
-        public StepCommittedException(Exception inner)
+        public StepCommittedException(Exception inner, bool earlierStep)
             : base("The disk refused while a committed step was put in place; it is completed when the store opens.", inner)
         {
+            EarlierStep = earlierStep;
         }
+
+        /// <summary>
+        /// The committed step that failed is one an earlier attempt left; the step being applied was not even
+        /// prepared, so nothing of it is on disk.
+        /// </summary>
+        public bool EarlierStep { get; }
     }
 
     /// <summary>
@@ -43,8 +50,10 @@ namespace UniSpring.Data.Internal
     /// with a header (length and SHA-256 of the payload). A write goes to a temporary file first and then replaces
     /// the document atomically, keeping the previous copy as <c>.bak</c>; a read that finds the document damaged
     /// returns the backup. Several changes go to disk through a journal: their new contents are written first,
-    /// then the journal (the commit point), then they are put in place; a journal left by a crash is completed
-    /// when the store opens, an incomplete one is dropped.
+    /// then the journal (the commit point: it is written under a temporary name and moved in place, so a journal is
+    /// either whole or absent), then they are put in place; a journal left by a crash is completed when the store
+    /// opens. A journal that cannot be read is kept for the next try; one that is damaged is set aside as
+    /// <c>.corrupt</c> and logged, never deleted.
     /// </summary>
     internal sealed class DocumentFiles
     {
@@ -57,6 +66,7 @@ namespace UniSpring.Data.Internal
         private const string TempExtension = ".tmp";
         private const string JournalExtension = ".journal";
         private const string JournalFolder = ".journal";
+        private const string CorruptExtension = ".corrupt";
         private const int MaxHeaderBytes = 1024;
 
         private static readonly Encoding Ascii = Encoding.ASCII;
@@ -283,8 +293,8 @@ namespace UniSpring.Data.Internal
         }
 
         /// <summary>
-        /// Completes every committed journal on disk, oldest first, and drops incomplete ones. Throws
-        /// <see cref="StepCommittedException"/> when the disk refuses to finish one; it then stays for the next try.
+        /// Completes every committed journal on disk, oldest first. Throws <see cref="StepCommittedException"/> when
+        /// the disk refuses to read or finish one; it then stays for the next try. A damaged journal is set aside.
         /// </summary>
         private void CompletePending()
         {
@@ -302,10 +312,19 @@ namespace UniSpring.Data.Internal
             {
                 long id;
                 IReadOnlyList<KeyValuePair<string, string>> entries;
-                if (!TryReadJournal(journal.Value, out id, out entries))
+                string damage;
+                try
                 {
-                    GameLog.Warn("UniSpring Data dropped an incomplete save step: " + Path.GetFileName(journal.Value));
-                    m_Files.Delete(journal.Value);
+                    damage = ReadJournal(journal.Value, out id, out entries);
+                }
+                catch (Exception exception)
+                {
+                    throw new StepCommittedException(exception, true);
+                }
+
+                if (damage != null)
+                {
+                    SetAside(journal.Value, damage);
                     continue;
                 }
 
@@ -316,11 +335,31 @@ namespace UniSpring.Data.Internal
                 }
                 catch (Exception exception)
                 {
-                    throw new StepCommittedException(exception);
+                    throw new StepCommittedException(exception, true);
                 }
 
                 GameLog.Info("UniSpring Data completed an interrupted save step (" + entries.Count + " documents).");
             }
+        }
+
+        /// <summary>
+        /// A damaged journal cannot be completed, and deleting it would hide that a save may be partial: it is
+        /// renamed to <c>.corrupt</c> (kept for inspection) and reported.
+        /// </summary>
+        private void SetAside(string journal, string damage)
+        {
+            var corrupt = Path.ChangeExtension(journal, null) + CorruptExtension;
+            try
+            {
+                m_Files.Replace(journal, corrupt, corrupt + BackupExtension);
+            }
+            catch (Exception exception)
+            {
+                throw new StepCommittedException(exception, true);
+            }
+
+            GameLog.Error("UniSpring Data set aside a damaged save step (" + damage + "): " +
+                          Path.GetFileName(corrupt) + ". The documents it named may hold their older contents.");
         }
 
         private void ApplyJournaled(IReadOnlyList<DocumentChange> changes, long step)
@@ -346,12 +385,16 @@ namespace UniSpring.Data.Internal
                 }
 
                 var body = JournalMagic + "\n" + lines;
+                var unpublished = journal + TempExtension;
+                temps.Add(unpublished);
                 m_Files.CreateDirectory(Path.GetDirectoryName(journal));
-                m_Files.WriteDurable(journal, Ascii.GetBytes(body + "sha256 " + Sha256(Ascii.GetBytes(body)) + "\n"));
+                m_Files.WriteDurable(unpublished, Ascii.GetBytes(body + "sha256 " + Sha256(Ascii.GetBytes(body)) + "\n"));
+                m_Files.Replace(unpublished, journal, journal + BackupExtension); // the commit point
             }
             catch (Exception)
             {
-                temps.Add(journal);
+                if (m_Files.Exists(journal))
+                    throw new StepCommittedException(new IOException("the journal was published, then the disk refused"), false);
                 DeleteQuietly(temps);
                 throw;
             }
@@ -363,7 +406,7 @@ namespace UniSpring.Data.Internal
             }
             catch (Exception exception)
             {
-                throw new StepCommittedException(exception);
+                throw new StepCommittedException(exception, false);
             }
         }
 
@@ -456,8 +499,10 @@ namespace UniSpring.Data.Internal
         // ---------------------------------------------------------------- recovery
 
         /// <summary>
-        /// Completes the journals a crash left behind (they were committed) and drops incomplete ones, then removes
-        /// every temporary file. Runs once, when the store opens, before anything else touches the files.
+        /// Completes the journals a crash left behind (they were committed) and sets damaged ones aside, then removes
+        /// every temporary file. Runs once, when the store opens, before anything else touches the files. When the
+        /// disk refuses to complete a journal it throws <see cref="StepCommittedException"/> and leaves every file
+        /// alone: the journal's new contents are among the temporary files.
         /// </summary>
         public void Recover()
         {
@@ -466,30 +511,33 @@ namespace UniSpring.Data.Internal
                 m_Files.Delete(temp);
         }
 
-        private bool TryReadJournal(string path, out long step, out IReadOnlyList<KeyValuePair<string, string>> entries)
+        /// <summary>
+        /// Reads a journal; returns why it is damaged, or null. A disk that refuses to read it throws: the journal
+        /// may be fine and is kept for the next try.
+        /// </summary>
+        private string ReadJournal(string path, out long step, out IReadOnlyList<KeyValuePair<string, string>> entries)
         {
             entries = null;
-            step = 0;
-            var fileName = Path.GetFileNameWithoutExtension(path);
-            if (!long.TryParse(fileName, NumberStyles.None, CultureInfo.InvariantCulture, out step))
-                return false;
+            if (!long.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.None, CultureInfo.InvariantCulture, out step))
+                return "not a step id";
+            var text = Ascii.GetString(m_Files.ReadAllBytes(path));
+            var checksumAt = text.LastIndexOf("sha256 ", StringComparison.Ordinal);
+            if (checksumAt < 0 || !text.StartsWith(JournalMagic + "\n", StringComparison.Ordinal))
+                return "incomplete";
+            var body = text.Substring(0, checksumAt);
+            var checksum = text.Substring(checksumAt + 7).TrimEnd('\n');
+            if (!string.Equals(checksum, Sha256(Ascii.GetBytes(body)), StringComparison.Ordinal))
+                return "checksum mismatch";
             try
             {
-                var text = Ascii.GetString(m_Files.ReadAllBytes(path));
-                var checksumAt = text.LastIndexOf("sha256 ", StringComparison.Ordinal);
-                if (checksumAt < 0 || !text.StartsWith(JournalMagic + "\n", StringComparison.Ordinal))
-                    return false;
-                var body = text.Substring(0, checksumAt);
-                var checksum = text.Substring(checksumAt + 7).TrimEnd('\n');
-                if (!string.Equals(checksum, Sha256(Ascii.GetBytes(body)), StringComparison.Ordinal))
-                    return false;
                 entries = ParseEntries(body.Substring(JournalMagic.Length + 1));
-                return true;
             }
-            catch (Exception)
+            catch (FormatException exception)
             {
-                return false;
+                return exception.Message;
             }
+
+            return null;
         }
 
         // ---------------------------------------------------------------- envelope

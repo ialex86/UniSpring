@@ -1,8 +1,7 @@
 # Lifecycle, events and ticks
 
 Three container services that replace hand-written plumbing: start and stop
-hooks, events between modules, and the frame loop. All of them work on Mono and
-IL2CPP: no run-time proxies are involved.
+hooks, events between modules, and the frame loop. They do not require runtime method proxies; IL2CPP compatibility and PlayerLoop installation across Play sessions are not yet verified.
 
 ## Lifecycle
 
@@ -20,10 +19,16 @@ internal sealed class Radio : IRadio, ILifecycle
 ```
 
 - Start runs in bean order (`[Order]`, then type name); Stop in reverse.
-- A Start that throws fails the build; the beans already started are stopped.
+- A Start that throws fails the build; only successfully started beans are stopped. Clean up partial resources inside a failing Start.
 - A Stop that throws does not stop the others.
 - Application beans and registered instances take part. A Scene bean does not;
-  use `IDisposable` for its end.
+  use `IDisposable` for its end. A transient bean does not either: it belongs to
+  whoever asked for it.
+- Start is not a transaction: when a Start throws, the beans started before it
+  are stopped, but what they did (events published, files written) stays.
+- Lifecycle beans, listeners and tickables are called through the same AOP
+  proxies as any other caller: `[Transactional]` and other advice apply.
+- Disposing the container from a bean that is being disposed does nothing more.
 
 The container itself can be injected (`ApplicationContext` in a constructor),
 for infrastructure that collects beans by role. Business code should take its
@@ -67,7 +72,10 @@ internal sealed class LoanFeed : IEventListener<LoanTaken>
   subscribers.
 - A listener that throws is logged; the others still run.
 - Events published while the container builds (from a constructor or
-  `[PostConstruct]`) are kept and delivered when it starts.
+  `[PostConstruct]`) are kept and delivered when it starts, in the order they
+  were published; an event published while they are delivered comes after them.
+  An `[AfterCommit]` listener gets such an event only if the transaction it was
+  published in commits.
 - Listener beans are application beans. A Scene bean, a MonoBehaviour or a
   tool subscribes instead and disposes the subscription when it goes:
 
@@ -82,11 +90,9 @@ private void OnDestroy() => m_Subscription?.Dispose();
 
 ### After the commit
 
-A listener marked `[AfterCommit]` (from `UniSpring.Transactions`) receives an
-event published inside a transaction only after that transaction commits, as
-Spring's `@TransactionalEventListener`; on a rollback the event is dropped.
-Outside a transaction it is delivered at once. Use it for anything that should
-only react to saved state: a feed line, a sound, an achievement.
+Mark an application listener `[AfterCommit]` (from `UniSpring.Transactions`) to defer it until the logical transaction boundary succeeds; normal rollback is intended to discard deferred delivery. Outside a recognized boundary the listener runs immediately, unlike Spring's default transactional listener fallback policy. With FileDocumentStore, logical commit only makes changes visible and queues disk writes. It is not proof of disk persistence or a reliable external event outbox.
+
+Keep the work of one transaction sequential, and do not make an after-commit callback the only record of an irreversible side effect that must complete. See [transactions](transactions.md) and [testing](testing.md).
 
 ```csharp
 [Component]
@@ -102,6 +108,12 @@ The transaction is the one of the package's boundaries in the calling flow:
 begun with `ITransactionManager.Begin` directly is not seen.
 `TransactionSynchronization.AfterCommit(action)` holds any other work the same
 way.
+
+Delivery and deferred callbacks use the executing thread, not a Unity main-thread dispatcher. For UI, audio or scene changes, dispatch explicitly to the Unity main thread if the publisher or completion path may be asynchronous. Keep subscription tokens and dispose them when the subscriber goes.
+
+A commit that throws counts as a rollback: the held work is dropped. Tasks
+started inside a transaction share it; work they register after the
+transaction has ended runs at once.
 
 ## Ticks
 
@@ -129,7 +141,14 @@ internal sealed class GangService : IGangs, ITickable
 - A tickable that throws is logged; the others still run.
 - Application beans are added on their own. A Scene bean or another object
   adds itself through `ITickRegistry.Add(tickable)` and disposes the result
-  when it goes; it ticks after the beans.
+  when it goes; it ticks after the beans. Each registration removes only
+  itself (by reference, not `Equals`), and never a bean; an object is ticked
+  once however often it is added. Use ticks for frame-level orchestration, not
+  large synchronous repository queries.
+- The entries are inserted into the current player loop at the end of each
+  phase. A tool that calls `PlayerLoop.SetPlayerLoop` with a loop built before
+  the container started removes them; build such a loop from
+  `PlayerLoop.GetCurrentPlayerLoop()` after the start.
 
 ## Profiles
 

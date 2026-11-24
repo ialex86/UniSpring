@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Reflection;
 using UnityEngine;
 
@@ -10,13 +11,15 @@ namespace UniSpring.Data.Internal
     /// <see cref="ConfigurationPropertiesAttribute"/> classes. Everything is loaded and checked here, once; a
     /// problem is an error of the game's data and stops the start.
     /// </summary>
-    internal sealed class CatalogFactory
+    internal sealed class CatalogFactory : IDisposable
     {
         private readonly IResourceSource m_Source;
         private readonly Func<IDocumentSerializer> m_Serializer;
         private readonly Dictionary<Type, RecordMapping> m_Mappings = new Dictionary<Type, RecordMapping>();
         private readonly Dictionary<Type, List<DocumentValidation>> m_Validations = new Dictionary<Type, List<DocumentValidation>>();
         private readonly Dictionary<Type, object> m_Made = new Dictionary<Type, object>();
+        private readonly Dictionary<Type, IRecordMapper> m_MapperOf = new Dictionary<Type, IRecordMapper>();
+        private readonly List<ScriptableObject> m_Defaults = new List<ScriptableObject>();
 
         public CatalogFactory(
             IResourceSource source,
@@ -29,7 +32,15 @@ namespace UniSpring.Data.Internal
             foreach (var mapper in mappers)
             {
                 foreach (var mapping in RecordMapping.Of(mapper))
-                    m_Mappings[mapping.DomainType] = mapping;
+                {
+                    IRecordMapper other;
+                    if (m_MapperOf.TryGetValue(mapping.DomainType, out other))
+                        throw new InvalidOperationException(
+                            "UniSpring Data: two mappers for " + mapping.DomainType.FullName + ": " +
+                            other.GetType().FullName + " and " + mapper.GetType().FullName + ".");
+                    m_MapperOf.Add(mapping.DomainType, mapper);
+                    m_Mappings.Add(mapping.DomainType, mapping);
+                }
             }
 
             foreach (var validator in validators)
@@ -77,10 +88,12 @@ namespace UniSpring.Data.Internal
                 ids.Add(item.Key);
             }
 
-            var all = Array.CreateInstance(domain, items.Count);
+            var array = Array.CreateInstance(domain, items.Count);
             for (var index = 0; index < items.Count; index++)
-                all.SetValue(items[index].Value, index);
-            IReadOnlyList<string> idList = ids;
+                array.SetValue(items[index].Value, index);
+            // Read-only views: a caller cannot change the catalog through what it was given.
+            var all = Activator.CreateInstance(typeof(ReadOnlyCollection<>).MakeGenericType(domain), array);
+            IReadOnlyList<string> idList = new ReadOnlyCollection<string>(ids);
 
             var handlers = new Dictionary<MethodInfo, Func<object[], object>>
             {
@@ -170,7 +183,15 @@ namespace UniSpring.Data.Internal
             {
                 value = m_Source.LoadAsset(attribute.Path, contract);
                 if (value == null)
-                    value = Missing(contract, attribute) ?? ScriptableObject.CreateInstance(contract);
+                {
+                    value = Missing(contract, attribute);
+                    if (value == null)
+                    {
+                        var defaults = ScriptableObject.CreateInstance(contract);
+                        m_Defaults.Add(defaults);
+                        value = defaults;
+                    }
+                }
             }
             else
             {
@@ -211,6 +232,22 @@ namespace UniSpring.Data.Internal
                 throw new InvalidOperationException(
                     "UniSpring Data: settings " + contract.Name + " need Resources/" + attribute.Path + ", which does not exist.");
             return null;
+        }
+
+        /// <summary>Destroys the settings objects made here for missing assets; loaded assets belong to Unity.</summary>
+        public void Dispose()
+        {
+            foreach (var defaults in m_Defaults)
+            {
+                if (defaults == null)
+                    continue;
+                if (Application.isPlaying)
+                    UnityEngine.Object.Destroy(defaults);
+                else
+                    UnityEngine.Object.DestroyImmediate(defaults);
+            }
+
+            m_Defaults.Clear();
         }
 
         private RecordMapping MappingOf(Type domain)

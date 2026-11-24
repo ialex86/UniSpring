@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -39,17 +38,26 @@ namespace UniSpring.DependencyInjection
 
     /// <summary>
     /// Lets a module hold an event back for a listener: the transactions module delivers it after the current
-    /// transaction commits (see <c>[AfterCommit]</c>). Return true when the delivery was taken over.
+    /// transaction commits (see <c>[AfterCommit]</c>).
     /// </summary>
     public interface IEventDeferral
     {
+        /// <summary>Return true when the delivery to <paramref name="listener"/> was taken over.</summary>
         bool TryDefer(object listener, Action deliver);
+
+        /// <summary>
+        /// Called when an event is published before the container has started, on the publisher's flow: returns a
+        /// deferral bound to the state of that moment (the transaction then open), used when the event is
+        /// delivered at the start; null when nothing has to be remembered.
+        /// </summary>
+        IEventDeferral Capture();
     }
 
     /// <summary>
     /// The container's event publisher. It collects the listener beans when the container starts; events published
-    /// before (from a constructor or <c>[PostConstruct]</c>) are kept and delivered then, in order. Safe to use from
-    /// any thread once started.
+    /// before (from a constructor or <c>[PostConstruct]</c>) are kept and delivered then. Every event kept that way,
+    /// and every event published while they are delivered, is delivered in publishing order before the publisher
+    /// delivers directly. Safe to use from any thread once started.
     /// </summary>
     [Component]
     [Order(-900)]
@@ -62,17 +70,26 @@ namespace UniSpring.DependencyInjection
             public Action<object> Deliver;
         }
 
-        private readonly ApplicationContext m_Context;
-        private readonly object m_Gate = new object();
-        private readonly ConcurrentDictionary<Type, Target[]> m_Routes = new ConcurrentDictionary<Type, Target[]>();
-        private Target[] m_Beans;
-        private Target[] m_Subscribers = new Target[0];
-        private IEventDeferral[] m_Deferrals = new IEventDeferral[0];
-        private List<object> m_Early = new List<object>();
+        private sealed class Early
+        {
+            public object Event;
+            public IEventDeferral[] Deferrals;
+        }
 
-        public EventPublisher(ApplicationContext context)
+        private readonly ApplicationContext m_Context;
+        private readonly IEventDeferral[] m_Deferrals;
+
+        // Guards the beans, the subscribers, the routes and the early queue; delivery itself runs outside it.
+        private readonly object m_Gate = new object();
+        private readonly Dictionary<Type, Target[]> m_Routes = new Dictionary<Type, Target[]>();
+        private Target[] m_Beans = new Target[0];
+        private Target[] m_Subscribers = new Target[0];
+        private Queue<Early> m_Early = new Queue<Early>();
+
+        public EventPublisher(ApplicationContext context, IReadOnlyList<IEventDeferral> deferrals)
         {
             m_Context = context;
+            m_Deferrals = new List<IEventDeferral>(deferrals).ToArray();
         }
 
         public void Start()
@@ -81,23 +98,29 @@ namespace UniSpring.DependencyInjection
             foreach (var listener in m_Context.GetAllInScope(typeof(IEventListener)))
                 beans.AddRange(TargetsOf(listener));
 
-            var deferrals = m_Context.GetAllInScope(typeof(IEventDeferral));
-            var deferralArray = new IEventDeferral[deferrals.Count];
-            for (var index = 0; index < deferrals.Count; index++)
-                deferralArray[index] = (IEventDeferral)deferrals[index];
-
-            List<object> early;
             lock (m_Gate)
             {
                 m_Beans = beans.ToArray();
-                m_Deferrals = deferralArray;
                 m_Routes.Clear();
-                early = m_Early;
-                m_Early = null;
             }
 
-            foreach (var evt in early)
-                Deliver(evt);
+            // Drained in order; what is published meanwhile (by a listener, or another thread) queues behind.
+            while (true)
+            {
+                Early early;
+                lock (m_Gate)
+                {
+                    if (m_Early.Count == 0)
+                    {
+                        m_Early = null;
+                        return;
+                    }
+
+                    early = m_Early.Dequeue();
+                }
+
+                Deliver(early.Event, early.Deferrals);
+            }
         }
 
         public void Stop()
@@ -118,12 +141,26 @@ namespace UniSpring.DependencyInjection
             {
                 if (m_Early != null)
                 {
-                    m_Early.Add(evt);
+                    m_Early.Enqueue(new Early { Event = evt, Deferrals = Capture() });
                     return;
                 }
             }
 
-            Deliver(evt);
+            Deliver(evt, m_Deferrals);
+        }
+
+        /// <summary>The deferrals bound to the publisher's state now, for an event delivered later.</summary>
+        private IEventDeferral[] Capture()
+        {
+            var captured = new List<IEventDeferral>();
+            foreach (var deferral in m_Deferrals)
+            {
+                var bound = deferral.Capture();
+                if (bound != null)
+                    captured.Add(bound);
+            }
+
+            return captured.ToArray();
         }
 
         public IDisposable Subscribe<T>(Action<T> listener)
@@ -153,10 +190,19 @@ namespace UniSpring.DependencyInjection
             }
         }
 
-        private void Deliver(object evt)
+        private void Deliver(object evt, IEventDeferral[] deferrals)
         {
-            var targets = m_Routes.GetOrAdd(evt.GetType(), Route);
-            var deferrals = m_Deferrals;
+            Target[] targets;
+            lock (m_Gate)
+            {
+                var type = evt.GetType();
+                if (!m_Routes.TryGetValue(type, out targets))
+                {
+                    targets = Route(type);
+                    m_Routes.Add(type, targets);
+                }
+            }
+
             for (var index = 0; index < targets.Length; index++)
             {
                 var target = targets[index];
@@ -192,24 +238,17 @@ namespace UniSpring.DependencyInjection
             }
         }
 
+        /// <summary>Under the gate: the bean listeners, then the subscribers, that take events of the type.</summary>
         private Target[] Route(Type eventType)
         {
-            Target[] beans;
-            Target[] subscribers;
-            lock (m_Gate)
-            {
-                beans = m_Beans ?? new Target[0];
-                subscribers = m_Subscribers;
-            }
-
             var result = new List<Target>();
-            foreach (var target in beans)
+            foreach (var target in m_Beans)
             {
                 if (target.EventType.IsAssignableFrom(eventType))
                     result.Add(target);
             }
 
-            foreach (var target in subscribers)
+            foreach (var target in m_Subscribers)
             {
                 if (target.EventType.IsAssignableFrom(eventType))
                     result.Add(target);
@@ -218,7 +257,8 @@ namespace UniSpring.DependencyInjection
             return result.ToArray();
         }
 
-        private static IEnumerable<Target> TargetsOf(object listener)
+        /// <summary>One target per listener interface, each called through its proxy when the bean is advised.</summary>
+        private IEnumerable<Target> TargetsOf(object listener)
         {
             foreach (var face in listener.GetType().GetInterfaces())
             {
@@ -226,7 +266,7 @@ namespace UniSpring.DependencyInjection
                     continue;
                 var eventType = face.GetGenericArguments()[0];
                 var adapter = (IListenerAdapter)Activator.CreateInstance(
-                    typeof(ListenerAdapter<>).MakeGenericType(eventType), listener);
+                    typeof(ListenerAdapter<>).MakeGenericType(eventType), m_Context.AdviseAs(listener, face));
                 yield return new Target { Listener = listener, EventType = eventType, Deliver = adapter.Deliver };
             }
         }

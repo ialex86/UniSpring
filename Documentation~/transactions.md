@@ -1,7 +1,6 @@
 # Transactions
 
-UniSpring ships the advice, not the store. The application provides an
-`ITransactionManager`; the container runs advised methods inside it.
+UniSpring.Transactions defines the boundaries and `ITransactionManager`; UniSpring.Data supplies `FileDocumentStore` and `InMemoryDocumentStore`. For ordinary saves install the file store once, as shown in the [shop walkthrough](getting-started.md). Implement a custom manager only for a different backend or unit of work.
 
 `[Transactional]` relies on run-time proxies (`DispatchProxy`) and works on the
 Mono scripting backend only. On IL2CPP use the explicit form below; see
@@ -92,8 +91,9 @@ Unity synchronization context. `ConfigureAwait(false)` does not guarantee a
 particular thread. Commit, rollback and dispose must not assume Unity's main
 thread; explicitly marshal engine-specific work if needed.
 
-To react to saved state only, mark an event listener `[AfterCommit]`; see
-[Lifecycle, events and ticks](lifecycle-events-ticks.md#after-the-commit).
+To react to logically committed state, mark a listener `[AfterCommit]`; see [Lifecycle, events and ticks](lifecycle-events-ticks.md#after-the-commit). FileDocumentStore commits in memory before background disk writes. Check `WaitForDisk(timeout)` and `LostChanges` when the application actually needs a persistence checkpoint. Direct `Begin()` does not establish the package's after-commit boundary.
+
+Use sequential work within a transaction; await each operation before starting the next. AsyncLocal is not a guarantee of safe concurrent mutations of inherited transaction state. Independent flows use last-commit-wins for the same document, not serializable isolation. Rollback does not restore arbitrary mutable objects, Unity state or external side effects. A commit that throws (including one cancelled by a save reset) drops the after-commit work. For critical external work use explicit recovery/reconciliation rather than an after-commit callback alone.
 
 For a complete, runnable example of the manager and transaction interfaces,
 see [the counter store walkthrough](transaction-store-example.md), including

@@ -1,5 +1,29 @@
 # Configuration
 
+## Composition and profiles
+
+Configure once, before the first `RuntimeContext.Current` access. Calls to `RuntimeContext.Configure` set the hook rather than accumulate hooks; combine store installation, explicit instances and boundary configuration in a single composition root.
+
+| `ContextOptions` member | Default when null | Purpose |
+| --- | --- | --- |
+| `Profiles` | `ContextOptions.DefaultProfiles()` | Active profiles used by the component scanner |
+| `Boundaries` | Disabled boundary policy | Optional module-boundary enforcement |
+| `Configure` | No hook | Register instances before warm-up |
+
+```csharp
+using System.Collections.Generic;
+using UniSpring.DependencyInjection;
+
+// In a test or manually owned composition root:
+using var context = ApplicationContext.Build(
+    new[] { typeof(MyService) }, // replace with the explicit bean types
+    new ContextOptions { Profiles = new HashSet<string> { "Test" } });
+```
+
+For Unity's automatic context, set `RuntimeContext.Profiles` before first access. Its default profiles include `Editor` or `Player`, `Development` for development builds, and names from the comma-separated `UNISPRING_PROFILES` environment variable. Assigning a set replaces the defaults; include any default names you still want. `[Profile("!Editor")]` matches an inactive profile. Profiles are chosen at build time, not a live switch. `ApplicationContext.Profiles` reports the chosen set.
+
+See [catalogs and settings](catalogs-and-settings.md) for typed application settings and resource overrides, and [architecture](architecture.md) for a composition root layout.
+
 ## `GameLogSourceOptions`
 
 | Property | Default | Meaning |
@@ -67,6 +91,8 @@ RuntimeContext.Configure(context =>
 | `Build(assemblies, configureBeforeWarmUp)` | Two-phase build with instance registration |
 | `Build(assemblies, boundaryOptions, configureBeforeWarmUp)` | Build with an optional boundary policy |
 | `Build(componentTypes)` | Build from an explicit list of component types |
+| `Build(assemblies, ContextOptions)` / `Build(componentTypes, ContextOptions)` | Build with profiles, boundaries and a pre-warm-up hook |
+| `Profiles` | Read the active profile names |
 | `Get<T>()`, `GetAll<T>()` | Resolve beans |
 | `RegisterInstance<T>(instance)` | Register an authored object before warm-up |
 | `CreateScope(lifetime)` | Child scope |

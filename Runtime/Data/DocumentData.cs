@@ -62,6 +62,7 @@ namespace UniSpring.Data
         /// The object behind a <see cref="CatalogAttribute"/> interface, or a
         /// <see cref="ConfigurationPropertiesAttribute"/> class, read from <paramref name="source"/>.
         /// </summary>
+        /// <remarks>A ScriptableObject made for missing settings belongs to the caller, who destroys it.</remarks>
         public T Catalog<T>(IResourceSource source)
             where T : class
         {

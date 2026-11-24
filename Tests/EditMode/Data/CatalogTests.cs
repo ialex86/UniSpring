@@ -181,6 +181,39 @@ namespace UniSpring.Data.Tests
         }
 
         [Test]
+        public void What_A_Catalog_Hands_Out_Cannot_Change_It()
+        {
+            var catalog = m_Data.Catalog<IShopCatalog>(m_Resources);
+
+            var all = (IList<ShopItem>)catalog.All();
+            var ids = (IList<string>)catalog.Ids();
+            Assert.Throws<NotSupportedException>(() => all[0] = null);
+            Assert.Throws<NotSupportedException>(() => ids.Add("nitro"));
+            Assert.AreEqual(3, catalog.All().Count);
+            Assert.IsNotNull(catalog.All()[0]);
+        }
+
+        [Component]
+        public sealed class SecondShopItemMapper : IRecordMapper<ShopItem, ShopItemRecord>
+        {
+            public ShopItemRecord ToRecord(ShopItem item) => new ShopItemRecord();
+
+            public ShopItem ToDomain(ShopItemRecord record) => new ShopItem("other", 1);
+        }
+
+        [Test]
+        public void Two_Mappers_For_One_Type_Stop_The_Start_And_Name_Both()
+        {
+            var data = DocumentData.InMemory(new JsonTestSerializer())
+                .With(new ShopItemMapper())
+                .With(new SecondShopItemMapper());
+
+            var error = Assert.Throws<InvalidOperationException>(() => data.Catalog<IShopCatalog>(m_Resources));
+            StringAssert.Contains(nameof(ShopItemMapper), error.Message);
+            StringAssert.Contains(nameof(SecondShopItemMapper), error.Message);
+        }
+
+        [Test]
         public void A_Broken_Item_Stops_The_Start_And_Names_The_Asset()
         {
             m_Resources.Texts["Shop/Items/broken"] = "not json";

@@ -242,8 +242,9 @@ namespace UniSpring.Data.Tests
         }
 
         [Test]
-        public void An_Incomplete_Journal_Is_Dropped_And_The_Documents_Stay_As_They_Were()
+        public void A_Damaged_Journal_Is_Set_Aside_And_The_Documents_Stay_As_They_Were()
         {
+            LogAssert.ignoreFailingMessages = true;
             var store = Open();
             store.Write("Garage", "car-1", Bytes("coupe"));
             store.WaitForDisk(Wait);
@@ -258,8 +259,32 @@ namespace UniSpring.Data.Tests
             var reopened = Open();
 
             Assert.AreEqual("coupe", Text(reopened.Read("Garage", "car-1")));
-            Assert.IsEmpty(Directory.GetFiles(journal));
+            Assert.AreEqual(new[] { "9.corrupt" }, Array.ConvertAll(Directory.GetFiles(journal), Path.GetFileName),
+                            "kept for inspection, never completed or deleted");
             Assert.IsFalse(File.Exists(stray));
+        }
+
+        [Test]
+        public void A_Journal_The_Disk_Cannot_Read_Is_Kept_And_Completed_Later()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var store = Open(new FlakyFileSystem { FailReplaceOf = "Garage" });
+            store.Run(() =>
+            {
+                store.Write("Economy", "wallet", Bytes("40"));
+                store.Write("Garage", "car-1", Bytes("coupe"));
+            });
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(200)));
+            store.Close(TimeSpan.FromMilliseconds(100));
+
+            // Opening on a disk that refuses to read the journal does not throw and deletes nothing.
+            var refusing = Open(new FlakyFileSystem { FailReadsOf = ".journal" });
+            Assert.AreEqual(1, Directory.GetFiles(Path.Combine(m_Root, ".journal"), "*.journal").Length, "the journal stays");
+            refusing.Close(TimeSpan.FromMilliseconds(100));
+
+            var reopened = Open();
+            Assert.AreEqual("coupe", Text(reopened.Read("Garage", "car-1")), "completed once the disk reads it");
+            Assert.AreEqual("40", Text(reopened.Read("Economy", "wallet")));
         }
 
         [Test]
@@ -350,7 +375,8 @@ namespace UniSpring.Data.Tests
                         opened.Set();
                         cleared.Wait();
                         store.Write("Economy", "loan", Bytes("old"));
-                        transaction.Commit();
+                        StringAssert.Contains("cleared for a new game",
+                            Assert.Throws<InvalidOperationException>(() => transaction.Commit()).Message);
                     }
                 });
             }
@@ -483,7 +509,15 @@ namespace UniSpring.Data.Tests
 
             public bool Exists(string path) => m_Inner.Exists(path);
 
-            public byte[] ReadAllBytes(string path) => m_Inner.ReadAllBytes(path);
+            /// <summary>Reading a file under a folder with this name always fails.</summary>
+            public string FailReadsOf;
+
+            public byte[] ReadAllBytes(string path)
+            {
+                if (FailReadsOf != null && path.Contains(Path.DirectorySeparatorChar + FailReadsOf + Path.DirectorySeparatorChar))
+                    throw new IOException("the disk cannot read this");
+                return m_Inner.ReadAllBytes(path);
+            }
 
             public void WriteDurable(string path, byte[] bytes)
             {

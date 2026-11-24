@@ -222,6 +222,8 @@ namespace UniSpring.Data
 
                 lock (m_Store.m_Gate)
                 {
+                    if (m_Transaction.Dropped)
+                        throw new InvalidOperationException(FileDocumentStore.DroppedMessage);
                     if (m_Transaction.Closed)
                         return;
                     if (m_Transaction.RollbackOnly)

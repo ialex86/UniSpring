@@ -46,7 +46,7 @@ namespace UniSpring.Transactions
             if (error != null && transaction.RollbackOnError)
                 transaction.Rollback();
             else
-                transaction.Commit();
+                transaction.Commit(); // a commit that throws marks the boundary rolled back itself
         }
 
         private static bool RollbackOnError(MethodInfo targetMethod)

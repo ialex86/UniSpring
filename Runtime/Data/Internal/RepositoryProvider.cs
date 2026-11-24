@@ -10,7 +10,7 @@ namespace UniSpring.Data.Internal
     /// <c>Resources</c> when there is none.
     /// </summary>
     [Component]
-    internal sealed class CatalogProvider : IContractProvider
+    internal sealed class CatalogProvider : IContractProvider, IDisposable
     {
         private CatalogFactory m_Factory;
 
@@ -31,6 +31,12 @@ namespace UniSpring.Data.Internal
             }
 
             return m_Factory.Create(contract);
+        }
+
+        public void Dispose()
+        {
+            m_Factory?.Dispose();
+            m_Factory = null;
         }
     }
 

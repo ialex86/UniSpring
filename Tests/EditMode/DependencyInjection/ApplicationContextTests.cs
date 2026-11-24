@@ -326,6 +326,32 @@ namespace UniSpring.DependencyInjection.Tests
         }
 
         [Strategy]
+        [Lifetime(BeanLifetime.Transient)]
+        public sealed class DisposableStrategy : ITestStrategy, IDisposable
+        {
+            public static int Disposed;
+
+            public IEnumerable<string> Keys
+            {
+                get { yield return "beta"; }
+            }
+
+            public void Dispose() => Disposed++;
+        }
+
+        [Test]
+        public void A_Transient_Strategy_Kept_By_A_Registry_Is_Disposed_With_Its_Scope()
+        {
+            DisposableStrategy.Disposed = 0;
+            var context = ApplicationContext.BuildFromTypes(new[] { typeof(AlphaStrategy), typeof(DisposableStrategy) });
+            context.Get<StrategyRegistry<string, ITestStrategy>>().Require("beta");
+
+            context.Dispose();
+
+            Assert.AreEqual(1, DisposableStrategy.Disposed);
+        }
+
+        [Strategy]
         public sealed class AlphaStrategy : ITestStrategy
         {
             public IEnumerable<string> Keys

@@ -4,6 +4,34 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Events: the listener route cache is thread-safe; events published while the
+  container builds are delivered in order, and `[AfterCommit]` listeners get
+  them only if their transaction commits; advised listeners are called
+  through their proxies.
+- Transactions: a commit that throws drops the after-commit work; a dispose
+  that throws still ends the boundary; tasks that outlive a transaction no
+  longer register work into it.
+- A transaction dropped by `DeleteAll` throws on `Commit` (file and in-memory
+  stores).
+- File store: journals are published atomically; a journal the disk cannot
+  read is kept, a damaged one is renamed to `.corrupt`; opening the store on a
+  disk that refuses to complete a journal no longer throws; closing drains on
+  one thread within one overall timeout; a failure of an earlier journal no
+  longer marks later steps as saved; `HasDocuments` no longer misses a change
+  landing while it looks.
+- Lifecycle: transient beans are not created to be started; disposing the
+  container while it disposes does nothing more.
+- Ticks: removing a registration never removes a bean or another equal object.
+- Strategy registries: one built for an interceptor's dependencies (before AOP
+  is ready) is not cached, so later consumers get proxied strategies; the
+  scope that builds a registry owns and disposes its transient strategies.
+- Catalogs: `All` and `Ids` are read-only; two mappers for one type are an
+  error; default `ScriptableObject` settings are destroyed with the container.
+
 ## [0.3.0] - 2026-11-24
 
 ### Added

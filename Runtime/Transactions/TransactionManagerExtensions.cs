@@ -34,9 +34,7 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
-                    if (rollbackOnError)
-                        boundary.RolledBack();
-                    FinishAfterFailure(transaction, rollbackOnError, exception);
+                    FinishAfterFailure(transaction, rollbackOnError, exception, boundary);
                     throw;
                 }
 
@@ -49,8 +47,14 @@ namespace UniSpring.Transactions
             }
             finally
             {
-                DisposeAfterCall(transaction, primary);
-                boundary.Dispose();
+                try
+                {
+                    DisposeAfterCall(transaction, primary);
+                }
+                finally
+                {
+                    boundary.Dispose();
+                }
             }
         }
 
@@ -76,9 +80,7 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
-                    if (rollbackOnError)
-                        boundary.RolledBack();
-                    FinishAfterFailure(transaction, rollbackOnError, exception);
+                    FinishAfterFailure(transaction, rollbackOnError, exception, boundary);
                     throw;
                 }
 
@@ -92,8 +94,14 @@ namespace UniSpring.Transactions
             }
             finally
             {
-                DisposeAfterCall(transaction, primary);
-                boundary.Dispose();
+                try
+                {
+                    DisposeAfterCall(transaction, primary);
+                }
+                finally
+                {
+                    boundary.Dispose();
+                }
             }
         }
 
@@ -120,9 +128,7 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
-                    if (rollbackOnError)
-                        boundary.RolledBack();
-                    FinishAfterFailure(transaction, rollbackOnError, exception);
+                    FinishAfterFailure(transaction, rollbackOnError, exception, boundary);
                     throw;
                 }
 
@@ -135,8 +141,14 @@ namespace UniSpring.Transactions
             }
             finally
             {
-                DisposeAfterCall(transaction, primary);
-                boundary.Dispose();
+                try
+                {
+                    DisposeAfterCall(transaction, primary);
+                }
+                finally
+                {
+                    boundary.Dispose();
+                }
             }
         }
 
@@ -160,9 +172,7 @@ namespace UniSpring.Transactions
                 }
                 catch (Exception exception)
                 {
-                    if (rollbackOnError)
-                        boundary.RolledBack();
-                    FinishAfterFailure(transaction, rollbackOnError, exception);
+                    FinishAfterFailure(transaction, rollbackOnError, exception, boundary);
                     throw;
                 }
 
@@ -176,8 +186,14 @@ namespace UniSpring.Transactions
             }
             finally
             {
-                DisposeAfterCall(transaction, primary);
-                boundary.Dispose();
+                try
+                {
+                    DisposeAfterCall(transaction, primary);
+                }
+                finally
+                {
+                    boundary.Dispose();
+                }
             }
         }
 
@@ -190,8 +206,11 @@ namespace UniSpring.Transactions
         }
 
         /// <summary>The work failed: its exception stays the one the caller sees.</summary>
-        private static void FinishAfterFailure(ITransaction transaction, bool rollbackOnError, Exception primary)
+        private static void FinishAfterFailure(
+            ITransaction transaction, bool rollbackOnError, Exception primary, TransactionSynchronization.Boundary boundary)
         {
+            if (rollbackOnError)
+                boundary.RolledBack();
             try
             {
                 if (rollbackOnError)
@@ -201,6 +220,8 @@ namespace UniSpring.Transactions
             }
             catch (Exception cleanup)
             {
+                // The commit did not happen either: nothing held for it runs.
+                boundary.RolledBack();
                 primary.Data["UniSpring.Transaction.CompletionFailure"] = cleanup.ToString();
             }
         }

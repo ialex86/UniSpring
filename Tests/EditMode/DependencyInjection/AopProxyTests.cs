@@ -175,6 +175,95 @@ namespace UniSpring.DependencyInjection.Tests
             context.Dispose();
         }
 
+        public interface ITracedStrategy : IKeyedStrategy<string>
+        {
+            bool InScope();
+        }
+
+        [Strategy]
+        public sealed class TracedStrategy : ITracedStrategy
+        {
+            private readonly Trace m_Trace;
+
+            public TracedStrategy(Trace trace)
+            {
+                m_Trace = trace;
+            }
+
+            public IEnumerable<string> Keys
+            {
+                get { yield return "traced"; }
+            }
+
+            [Traced]
+            public bool InScope() => m_Trace.Depth.Value == 1;
+        }
+
+        [Component]
+        public sealed class RegistryInterceptor : IMethodInterceptor
+        {
+            public RegistryInterceptor(StrategyRegistry<string, ITracedStrategy> strategies)
+            {
+            }
+
+            public bool Matches(MethodInfo targetMethod) => false;
+
+            public object Invoke(IMethodInvocation invocation) => invocation.Proceed();
+        }
+
+        [Test]
+        public void A_Registry_Built_Before_The_Interceptors_Are_Ready_Is_Not_Kept()
+        {
+            UnityEngine.TestTools.LogAssert.Expect(
+                UnityEngine.LogType.Warning,
+                new System.Text.RegularExpressions.Regex("TracedStrategy has advised methods but was handed out before"));
+
+            var context = ApplicationContext.BuildFromTypes(
+                new[] { typeof(Trace), typeof(TraceInterceptor), typeof(TracedStrategy), typeof(RegistryInterceptor) });
+            var strategy = context.Get<StrategyRegistry<string, ITracedStrategy>>().Require("traced");
+
+            Assert.IsInstanceOf<AopProxy>(strategy, "the registry handed out later holds the proxy");
+            Assert.IsTrue(strategy.InScope());
+            context.Dispose();
+        }
+
+        public sealed class Ping
+        {
+        }
+
+        [Component]
+        public sealed class TracedListener : IEventListener<Ping>, ITickable
+        {
+            private readonly Trace m_Trace;
+
+            public TracedListener(Trace trace)
+            {
+                m_Trace = trace;
+            }
+
+            [Traced]
+            public void On(Ping evt) => m_Trace.Events.Add("ping in scope " + (m_Trace.Depth.Value == 1));
+
+            [Traced]
+            public void Tick(float deltaTime) => m_Trace.Events.Add("tick in scope " + (m_Trace.Depth.Value == 1));
+        }
+
+        [Test]
+        public void Listeners_And_Tickables_Are_Called_Through_Their_Proxies()
+        {
+            var context = ApplicationContext.BuildFromTypes(
+                new[] { typeof(Trace), typeof(TraceInterceptor), typeof(TracedListener), typeof(EventPublisher), typeof(TickRunner) });
+            var trace = context.Get<Trace>();
+
+            context.Get<IEventPublisher>().Publish(new Ping());
+            ((TickRunner)context.Get<ITickRegistry>()).RunTick(1f);
+
+            Assert.AreEqual(
+                new[] { "open", "ping in scope True", "close", "open", "tick in scope True", "close" },
+                trace.Events.ToArray());
+            context.Dispose();
+        }
+
         [Component]
         public sealed class DependentInterceptor : IMethodInterceptor
         {

@@ -99,6 +99,8 @@ Application and Scene beans created by the container are disposed with their own
 
 An application bean is created in the root even if requested from a scene: it cannot capture scene-scoped dependencies. Container operations are thread-affine; use `RuntimeContext` on the Unity main thread.
 
+For automatic lifecycle, listener and tick roles, use Application beans only. A Scene bean manages a subscription or tick registration token and releases it on disposal; Transient beans are not collected as lifecycle, listener or tick participants. See [lifecycle, events and ticks](lifecycle-events-ticks.md). `ApplicationContext` itself may be injected into infrastructure but ordinary services should declare their dependencies, not resolve them dynamically.
+
 Use `JoinSceneScope` before loading the joined scene. Its path-based API should not be relied on to distinguish multiple concurrently loaded instances of the same scene asset.
 
 ## MonoBehaviour
@@ -166,9 +168,9 @@ Rules:
 - In both cases, if the bean handed out early has advised methods, the
   container logs a warning: that one reference skips the advice and is not
   proxied retroactively, while everything resolved later gets the proxy.
-  Avoid resolving strategy registries during interceptor creation or in the
-  configure hook: a registry is a snapshot and would keep the unproxied
-  references.
+  A strategy registry resolved while the interceptors are created is not
+  cached: the one that interceptor got keeps the unproxied strategies, while
+  the registry handed out later holds the proxies.
 - A failure in `ScopeInterceptor.Complete` or in disposing the scope never
   replaces the exception of the method itself; it is attached to it in
   `Exception.Data`.
@@ -221,9 +223,9 @@ resolved; register strategy instances before that.
 
 A strategy may advertise several domain keys; all must be unique across the registry. A null key or null key collection is invalid. Duplicate keys fail when the registry is built (during warm-up if an application bean requires it). A missing key fails at `Require`, while `TryGet` is appropriate for optional behavior.
 
-A registry is a snapshot of instances cached in the resolving scope, not a factory. Repeated `Require` calls return the same instance even for Transient strategies. Register matching external instances before the registry is requested; late registration that would affect an existing registry is rejected. Prefer stateless strategies, and avoid disposable Transient strategies in automatically resolved registries: the registry itself does not dispose them.
+A registry is a snapshot of instances cached in the resolving scope, not a factory. Repeated `Require` calls return the same instance even for Transient strategies. Register matching external instances before the registry is requested; late registration that would affect an existing registry is rejected. Prefer stateless strategies. Transient strategies kept by a registry belong to the scope that built it and are disposed with that scope.
 
-Keep AOP interceptors and pre-warm-up configuration independent of advised strategy registries. Early resolution can capture unproxied references in a snapshot; do not rely on those references becoming proxied later.
+Keep AOP interceptors and pre-warm-up configuration independent of advised strategy registries. A registry resolved that early holds unproxied references (a warning is logged); it is not cached, so beans resolved later get a registry of proxies.
 
 The registry is a plain C# object and can be constructed without a container. This self-contained NUnit example tests dispatch and its missing-key contract. Place it in an EditMode test assembly referencing `UniSpring.DependencyInjection`:
 

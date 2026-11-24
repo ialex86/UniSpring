@@ -1,8 +1,14 @@
 # UniSpring documentation
 
-UniSpring is a small dependency injection container with declarative
-transactions and a structured logging facade for Unity, inspired by the Spring
-Framework.
+UniSpring is a Spring-inspired application framework for Unity. Start with the tutorial, then use the subsystem guides as a reference. Mono is the starting backend; generated repositories, catalogs and runtime advice are Mono-only, and IL2CPP has not been verified.
+
+- [Getting started: a complete shop](getting-started.md)
+- [Architecture and module boundaries](architecture.md)
+- [Spring-to-UniSpring cheat sheet](spring-cheatsheet.md)
+- [Catalogs and typed settings](catalogs-and-settings.md)
+- [Testing and platform verification](testing.md)
+- [Troubleshooting](troubleshooting.md)
+- [Agent architecture rules](../AGENTS.md)
 
 - [Dependency injection](dependency-injection.md)
 - [Lifecycle, events and ticks](lifecycle-events-ticks.md): start and stop hooks, events, the frame loop, profiles
@@ -31,7 +37,7 @@ Add the package to `Packages/manifest.json`:
 | --- | --- |
 | `UniSpring.DependencyInjection` | Container, attributes, scopes, strategies, Unity composition |
 | `UniSpring.Transactions` | `[Transactional]` advice and the `ITransactionManager` port |
-| `UniSpring.Data` | Repositories, mappers, validators, migrations and the document store port |
+| `UniSpring.Data` | Repositories, catalogs, typed settings, mapping, validation, migrations, file and memory stores |
 | `UniSpring.Logging` | `GameLog` facade, configuration, Unity sink |
 | `UniSpring.Logging.Editor` | Editor bootstrap for edit-mode tools |
 
