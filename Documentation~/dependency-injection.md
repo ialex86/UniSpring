@@ -117,7 +117,8 @@ Rules:
 - An instance passed to `RegisterInstance` is advised like a bean once the
   container has warmed up. Inside the configure hook it is returned as it is.
 - Proxies are generated at run time with `DispatchProxy`: Mono only. On
-  IL2CPP resolving an advised bean fails with an explanatory error. `AopProxies.Create` builds one by hand for an object made with
+  IL2CPP resolving an advised bean fails with an explanatory error; see
+  [IL2CPP](il2cpp.md). `AopProxies.Create` builds one by hand for an object made with
   `new`.
 
 ## Strategies

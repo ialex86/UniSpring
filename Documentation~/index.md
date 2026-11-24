@@ -8,6 +8,7 @@ Framework.
 - [Transactions](transactions.md)
 - [Logging](logging.md)
 - [Configuration](configuration.md)
+- [IL2CPP](il2cpp.md): what to change for iOS, consoles, WebGL and Android release builds
 
 ## Installation
 

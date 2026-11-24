@@ -4,7 +4,8 @@ UniSpring ships the advice, not the store. The application provides an
 `ITransactionManager`; the container runs advised methods inside it.
 
 `[Transactional]` relies on run-time proxies (`DispatchProxy`) and works on the
-Mono scripting backend only. On IL2CPP use the explicit form below.
+Mono scripting backend only. On IL2CPP use the explicit form below; see
+[IL2CPP](il2cpp.md) for the full list of steps.
 
 ## Explicit use
 

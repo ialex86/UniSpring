@@ -15,13 +15,12 @@ Dependency Injection, declarative transactions and structured logging for Unity,
 
 Requires Unity 6 (`6000.0` or newer). No third-party dependencies.
 
-**Scripting backends.** Method interception, and therefore `[Transactional]`,
-generates its proxies at run time with `DispatchProxy`. That needs Mono: on
-IL2CPP (iOS, consoles, WebGL) resolving a bean with advised methods fails with
-an explanatory error; use `ITransactionManager.Run(...)` / `RunAsync(...)`
-there, which apply the same rules without a proxy.
-The rest of the package uses plain reflection; IL2CPP builds have not been
-tested yet.
+**IL2CPP.** One thing changes: `[Transactional]` (and any other method
+interception) needs Mono, so on IL2CPP replace it with
+`ITransactionManager.Run(...)` / `RunAsync(...)`. Code stripping is handled
+automatically. The full list of steps and a build checklist are in
+[Documentation~/il2cpp.md](Documentation~/il2cpp.md). IL2CPP builds have not
+been tested yet.
 
 ## Install
 
@@ -155,7 +154,7 @@ assemblies follow the `<Module>.Api` / `<Module>.Runtime` layout.
 ## Transactions
 
 `[Transactional]` runs a bean method inside one `ITransactionManager.Begin`
-(Mono only, see *Scripting backends* above):
+(Mono only, see *IL2CPP* above):
 
 ```csharp
 [Transactional]
