@@ -1,0 +1,19 @@
+{
+    "name": "UniSpring.Logging.Editor",
+    "rootNamespace": "UniSpring.Logging.Editor",
+    "references": [
+        "UniSpring.Logging",
+        "UniSpring.DependencyInjection"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

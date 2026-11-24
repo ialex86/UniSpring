@@ -1,0 +1,9 @@
+{
+    "dependencies": {
+        "com.unity.test-framework": "1.8.0",
+        "com.ialex86.unispring": "file:../../.."
+    },
+    "testables": [
+        "com.ialex86.unispring"
+    ]
+}

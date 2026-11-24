@@ -1,0 +1,22 @@
+{
+    "name": "UniSpring.DependencyInjection.Tests",
+    "rootNamespace": "UniSpring.DependencyInjection.Tests",
+    "references": [
+        "UniSpring.DependencyInjection",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

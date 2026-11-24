@@ -1,0 +1,17 @@
+{
+    "name": "UniSpring.Samples.BasicSetup",
+    "rootNamespace": "UniSpring.Samples.BasicSetup",
+    "references": [
+        "UniSpring.DependencyInjection",
+        "UniSpring.Logging"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

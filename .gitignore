@@ -136,3 +136,36 @@ crashlytics-build.properties
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# UniSpring package: host project used only for tests
+Tests~/UnityProject/[Ll]ibrary/
+Tests~/UnityProject/[Tt]emp/
+Tests~/UnityProject/[Oo]bj/
+Tests~/UnityProject/[Ll]ogs/
+Tests~/UnityProject/[Bb]uild/
+Tests~/UnityProject/[Bb]uilds/
+Tests~/UnityProject/[Uu]ser[Ss]ettings/
+Tests~/UnityProject/[Mm]emoryCaptures/
+Tests~/UnityProject/[Rr]ecordings/
+Tests~/UnityProject/*.csproj
+Tests~/UnityProject/*.sln
+Tests~/UnityProject/*.user
+Tests~/UnityProject/*.pidb
+Tests~/UnityProject/*.booproj
+Tests~/UnityProject/*.svd
+Tests~/UnityProject/*.pdb
+Tests~/UnityProject/*.mdb
+Tests~/UnityProject/*.opendb
+Tests~/UnityProject/*.VC.db
+Tests~/UnityProject/sysinfo.txt
+
+# Test artifacts
+/TestResults/
+/TestResults.meta
+
+# macOS
+.DS_Store
+.idea/
+
+# CI host project
+/.ci/

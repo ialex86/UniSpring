@@ -1,0 +1,12 @@
+<!--
+  UniSpring discovers [Service]/[Component]/[Strategy] beans by reflection.
+  Consumers usually do not reference the runtime assemblies directly, so code
+  stripping must not remove their bean types.
+-->
+<linker>
+  <assembly fullname="UniSpring.DependencyInjection" preserve="all"/>
+  <assembly fullname="UniSpring.Logging" preserve="all"/>
+  <assembly fullname="UniSpring.Transactions" preserve="all"/>
+  <!-- [Transactional] and other DI advice: run-time proxies are generated through DispatchProxy (Mono only). -->
+  <assembly fullname="System.Reflection.DispatchProxy" preserve="all" ignoreIfMissing="1"/>
+</linker>

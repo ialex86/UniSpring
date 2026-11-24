@@ -1,0 +1,60 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  editmode:
+    name: EditMode tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create test host project
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=".ci/UniSpringTestProject"
+          rm -rf "$host"
+          cp -R "Tests~/UnityProject" "$host"
+          cat > "$host/Packages/manifest.json" <<EOF
+          {
+              "dependencies": {
+                  "com.unity.test-framework": "1.8.0",
+                  "com.ialex86.unispring": "file:../../.."
+              },
+              "testables": [
+                  "com.ialex86.unispring"
+              ]
+          }
+          EOF
+
+      - name: Cache Library
+        uses: actions/cache@v4
+        with:
+          path: .ci/UniSpringTestProject/Library
+          key: unispring-library-${{ hashFiles('**/*.asmdef', '**/*.cs', 'Tests~/UnityProject/**') }}
+          restore-keys: unispring-library-
+
+      - name: Run tests
+        uses: game-ci/unity-test-runner@v4
+        env:
+          # A Personal license needs all three; a Pro license uses UNITY_SERIAL instead of UNITY_LICENSE.
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: .ci/UniSpringTestProject
+          unityVersion: auto
+          testMode: editmode
+          artifactsPath: test-results
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editmode-results
+          path: test-results

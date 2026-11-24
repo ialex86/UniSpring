@@ -1,0 +1,32 @@
+{
+    "name": "com.ialex86.unispring",
+    "version": "0.1.0",
+    "displayName": "UniSpring",
+    "description": "Dependency Injection, declarative transactions and structured logging for Unity, inspired by the Spring Framework.",
+    "unity": "6000.0",
+    "unityRelease": "0f1",
+    "license": "Apache-2.0",
+    "documentationUrl": "https://github.com/ialex86/UniSpring#readme",
+    "changelogUrl": "https://github.com/ialex86/UniSpring/blob/main/CHANGELOG.md",
+    "licensesUrl": "https://github.com/ialex86/UniSpring/blob/main/LICENSE.md",
+    "keywords": [
+        "dependency-injection",
+        "di",
+        "ioc",
+        "aop",
+        "transactions",
+        "logging",
+        "unity"
+    ],
+    "author": {
+        "name": "ialex86",
+        "url": "https://github.com/ialex86"
+    },
+    "samples": [
+        {
+            "displayName": "Basic Setup",
+            "description": "DI attributes, autowired MonoBehaviour and GameLog configuration.",
+            "path": "Samples~/BasicSetup"
+        }
+    ]
+}
