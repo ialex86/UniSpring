@@ -27,6 +27,18 @@ namespace UniSpring.Data.Internal
     }
 
     /// <summary>
+    /// The disk refused while a journaled step was being put in place: the step is committed (its journal is on
+    /// disk) and is completed when the store opens next, if it is not completed before.
+    /// </summary>
+    internal sealed class StepCommittedException : Exception
+    {
+        public StepCommittedException(Exception inner)
+            : base("The disk refused while a committed step was put in place; it is completed when the store opens.", inner)
+        {
+        }
+    }
+
+    /// <summary>
     /// The documents on disk. Each document is a file <c>&lt;root&gt;/&lt;area&gt;/&lt;hex of the name&gt;.doc</c>
     /// with a header (length and SHA-256 of the payload). A write goes to a temporary file first and then replaces
     /// the document atomically, keeping the previous copy as <c>.bak</c>; a read that finds the document damaged
@@ -178,6 +190,40 @@ namespace UniSpring.Data.Internal
             return new List<string>(names);
         }
 
+        /// <summary>Every area that holds at least one document file (readable or not), sorted ordinally.</summary>
+        public IReadOnlyList<string> Areas()
+        {
+            var areas = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var pattern in new[] { "*" + DocumentExtension, "*" + BackupExtension })
+            {
+                foreach (var file in m_Files.FilesBelow(m_Root, pattern))
+                {
+                    var folder = Path.GetDirectoryName(file);
+                    if (folder == null || folder.Length <= m_Root.Length)
+                        continue;
+                    var area = folder.Substring(m_Root.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        .Replace(Path.DirectorySeparatorChar, '/');
+                    if (IsArea(area))
+                        areas.Add(area);
+                }
+            }
+
+            return new List<string>(areas);
+        }
+
+        private static bool IsArea(string area)
+        {
+            try
+            {
+                RequireArea(area);
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
         private static void AddNames(IReadOnlyList<string> files, string extension, SortedSet<string> names)
         {
             foreach (var file in files)
@@ -211,39 +257,64 @@ namespace UniSpring.Data.Internal
         // ---------------------------------------------------------------- writes
 
         /// <summary>
-        /// Puts the changes on disk as one step: a single change directly, several through a journal. Throws when
-        /// the disk refuses; repeating the same step later is safe.
+        /// Puts the changes on disk as one step: a single change directly, several through a journal. When the disk
+        /// refuses before the step is committed, nothing has changed and the exception is the disk's own; once it is
+        /// committed, <see cref="StepCommittedException"/>. Repeating the step is safe. A successful step covers
+        /// every earlier one that failed (the store retries from the oldest waiting change), so the journals those
+        /// left are removed: completing them later would put old content over new.
         /// </summary>
         public void Apply(IReadOnlyList<DocumentChange> changes, long step)
         {
             if (changes.Count == 0)
                 return;
             if (changes.Count == 1)
-            {
                 ApplySingle(changes[0], step);
-                return;
-            }
+            else
+                ApplyJournaled(changes, step);
+            DeleteJournals();
+        }
 
+        private void ApplyJournaled(IReadOnlyList<DocumentChange> changes, long step)
+        {
+            var temps = new List<string>();
+            var journal = JournalPath(step);
             var lines = new StringBuilder();
-            foreach (var change in changes)
+            try
             {
-                m_Files.CreateDirectory(AreaFolder(change.Area));
-                if (change.IsDelete)
+                foreach (var change in changes)
                 {
-                    lines.Append("D ").Append(change.Area).Append(' ').Append(FileBase(change.Name)).Append('\n');
-                    continue;
+                    m_Files.CreateDirectory(AreaFolder(change.Area));
+                    if (change.IsDelete)
+                    {
+                        lines.Append("D ").Append(change.Area).Append(' ').Append(FileBase(change.Name)).Append('\n');
+                        continue;
+                    }
+
+                    var temp = TempPath(change.Area, change.Name, step);
+                    temps.Add(temp);
+                    m_Files.WriteDurable(temp, Encode(change.Bytes));
+                    lines.Append("W ").Append(change.Area).Append(' ').Append(FileBase(change.Name)).Append('\n');
                 }
 
-                m_Files.WriteDurable(TempPath(change.Area, change.Name, step), Encode(change.Bytes));
-                lines.Append("W ").Append(change.Area).Append(' ').Append(FileBase(change.Name)).Append('\n');
+                var body = JournalMagic + "\n" + lines;
+                m_Files.CreateDirectory(Path.GetDirectoryName(journal));
+                m_Files.WriteDurable(journal, Ascii.GetBytes(body + "sha256 " + Sha256(Ascii.GetBytes(body)) + "\n"));
+            }
+            catch (Exception)
+            {
+                temps.Add(journal);
+                DeleteQuietly(temps);
+                throw;
             }
 
-            var body = JournalMagic + "\n" + lines;
-            var journal = JournalPath(step);
-            m_Files.CreateDirectory(Path.GetDirectoryName(journal));
-            m_Files.WriteDurable(journal, Ascii.GetBytes(body + "sha256 " + Sha256(Ascii.GetBytes(body)) + "\n"));
-            Replay(ParseEntries(lines.ToString()), step);
-            m_Files.Delete(journal);
+            try
+            {
+                Replay(ParseEntries(lines.ToString()), step);
+            }
+            catch (Exception exception)
+            {
+                throw new StepCommittedException(exception);
+            }
         }
 
         private void ApplySingle(DocumentChange change, long step)
@@ -256,8 +327,37 @@ namespace UniSpring.Data.Internal
 
             m_Files.CreateDirectory(AreaFolder(change.Area));
             var temp = TempPath(change.Area, change.Name, step);
-            m_Files.WriteDurable(temp, Encode(change.Bytes));
-            m_Files.Replace(temp, DocumentPath(change.Area, change.Name), BackupPath(change.Area, change.Name));
+            try
+            {
+                m_Files.WriteDurable(temp, Encode(change.Bytes));
+                m_Files.Replace(temp, DocumentPath(change.Area, change.Name), BackupPath(change.Area, change.Name));
+            }
+            catch (Exception)
+            {
+                DeleteQuietly(new[] { temp });
+                throw;
+            }
+        }
+
+        private void DeleteJournals()
+        {
+            foreach (var journal in m_Files.Files(Path.Combine(m_Root, JournalFolder), "*" + JournalExtension))
+                m_Files.Delete(journal);
+        }
+
+        private void DeleteQuietly(IEnumerable<string> paths)
+        {
+            foreach (var path in paths)
+            {
+                try
+                {
+                    m_Files.Delete(path);
+                }
+                catch (Exception)
+                {
+                    // Left for the next start, which removes temporary files and incomplete journals.
+                }
+            }
         }
 
         /// <summary>The backup goes first: a document must never be left with only its old copy.</summary>

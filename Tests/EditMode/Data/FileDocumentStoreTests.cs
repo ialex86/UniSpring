@@ -222,6 +222,26 @@ namespace UniSpring.Data.Tests
         }
 
         [Test]
+        public void A_Journal_Left_By_A_Refused_Step_Never_Overwrites_Newer_Content()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var files = new FlakyFileSystem { FailReplaceOf = "Garage" };
+            var store = Open(files);
+            store.Run(() =>
+            {
+                store.Write("Economy", "wallet", Bytes("old"));
+                store.Write("Garage", "car-1", Bytes("coupe"));
+            });
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(100)));
+
+            store.Write("Economy", "wallet", Bytes("new"));
+            files.FailReplaceOf = null;
+            Assert.IsTrue(store.WaitForDisk(Wait), "the retry lands the old step and the new write together");
+
+            Assert.AreEqual("new", Text(Reopen().Read("Economy", "wallet")), "the old journal is gone, not completed");
+        }
+
+        [Test]
         public void An_Incomplete_Journal_Is_Dropped_And_The_Documents_Stay_As_They_Were()
         {
             var store = Open();
@@ -280,6 +300,104 @@ namespace UniSpring.Data.Tests
             Assert.AreEqual(1, reopened.CountByOwner("alex"));
         }
 
+        [Test]
+        public void A_New_Game_Clears_Every_Document_But_Keeps_The_Migration_Record()
+        {
+            var store = Open();
+            store.Write("Garage", "car-1", Bytes("coupe"));
+            store.Write("VehicleAssembly/Cars", "alex|car-7", Bytes("truck"));
+            store.Write("UniSpring", "migrations", Bytes("3"));
+            store.WaitForDisk(Wait);
+            store.Write("Economy", "wallet", Bytes("40")); // still waiting for the disk
+            var told = 0;
+            using (store.Subscribe(() => told++))
+            {
+                Assert.IsTrue(store.HasDocuments);
+
+                store.DeleteAll();
+
+                Assert.AreEqual(1, told, "the subscribers drop their state");
+                Assert.IsFalse(store.HasDocuments);
+            }
+
+            var reopened = Reopen();
+            Assert.IsFalse(reopened.HasDocuments, "nothing comes back after a restart");
+            Assert.IsEmpty(reopened.Names("VehicleAssembly/Cars"));
+            Assert.AreEqual("3", Text(reopened.Read("UniSpring", "migrations")));
+        }
+
+        [Test]
+        public void A_New_Game_Is_Refused_Inside_A_Transaction_And_Drops_Those_Of_Other_Flows()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var store = Open();
+            store.Write("Garage", "car-1", Bytes("coupe"));
+
+            using (store.Begin())
+                Assert.Throws<InvalidOperationException>(() => store.DeleteAll());
+            Assert.AreEqual(DocumentStatus.Found, store.Read("Garage", "car-1").Status, "the refused clear changed nothing");
+
+            var opened = new ManualResetEventSlim();
+            var cleared = new ManualResetEventSlim();
+            Task oldGame;
+            using (ExecutionContext.SuppressFlow())
+            {
+                oldGame = Task.Run(() =>
+                {
+                    using (var transaction = store.Begin())
+                    {
+                        store.Write("Economy", "wallet", Bytes("old"));
+                        opened.Set();
+                        cleared.Wait();
+                        store.Write("Economy", "loan", Bytes("old"));
+                        transaction.Commit();
+                    }
+                });
+            }
+
+            opened.Wait();
+            store.DeleteAll();
+            cleared.Set();
+            oldGame.GetAwaiter().GetResult();
+            store.WaitForDisk(Wait);
+
+            Assert.IsFalse(store.HasDocuments, "the old game's transaction never lands");
+            Assert.IsFalse(Reopen().HasDocuments);
+        }
+
+        [Test]
+        public void Closing_On_A_Refusing_Disk_Saves_What_The_Disk_Takes()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            var store = Open(new FlakyFileSystem { FailWritesOf = "Garage" });
+            store.Write("Garage", "car-1", Bytes("coupe"));
+            store.Write("Economy", "wallet", Bytes("40"));
+            Assert.IsFalse(store.WaitForDisk(TimeSpan.FromMilliseconds(100)), "the car blocks everything after it");
+
+            store.Close(TimeSpan.FromMilliseconds(100));
+
+            Assert.IsTrue(store.IsIdle);
+            var reopened = Open();
+            Assert.AreEqual("40", Text(reopened.Read("Economy", "wallet")), "the wallet is saved without the car");
+            Assert.AreEqual(DocumentStatus.Missing, reopened.Read("Garage", "car-1").Status);
+        }
+
+        [Test]
+        public void The_In_Memory_Store_Clears_The_Same_Way()
+        {
+            var store = new InMemoryDocumentStore();
+            store.Write("Garage", "car-1", Bytes("coupe"));
+            store.Write("UniSpring", "migrations", Bytes("3"));
+            var told = 0;
+            store.Subscribe(() => told++);
+
+            store.DeleteAll();
+
+            Assert.IsFalse(store.HasDocuments);
+            Assert.AreEqual(1, told);
+            Assert.AreEqual(DocumentStatus.Found, store.Read("UniSpring", "migrations").Status);
+        }
+
         /// <summary>A disk that refuses some operations.</summary>
         private sealed class FlakyFileSystem : IFileSystem
         {
@@ -291,12 +409,17 @@ namespace UniSpring.Data.Tests
             /// <summary>Replacing a document under a folder with this name always fails.</summary>
             public string FailReplaceOf;
 
+            /// <summary>Writing a file under a folder with this name always fails.</summary>
+            public string FailWritesOf;
+
             public bool Exists(string path) => m_Inner.Exists(path);
 
             public byte[] ReadAllBytes(string path) => m_Inner.ReadAllBytes(path);
 
             public void WriteDurable(string path, byte[] bytes)
             {
+                if (FailWritesOf != null && path.Contains(Path.DirectorySeparatorChar + FailWritesOf + Path.DirectorySeparatorChar))
+                    throw new IOException("the disk is full");
                 if (Interlocked.Decrement(ref FailWrites) >= 0)
                     throw new IOException("the disk is full");
                 Interlocked.Exchange(ref FailWrites, 0);

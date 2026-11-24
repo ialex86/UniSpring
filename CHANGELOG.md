@@ -18,7 +18,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - `FileDocumentStore`: documents in files, written on a background thread,
   with atomic replaces, backups and checksums, journaled transactions with
   crash recovery, ordered retries on a refusing disk and synchronous writes
-  after `Close`. `FileDocumentStore.Install` registers it in a container.
+  after `Close`, which saves what the disk takes when one step keeps failing.
+  `FileDocumentStore.Install` registers it in a container.
+- `IDocumentReset`: clear the saves for a new game (`DeleteAll`,
+  `HasDocuments`, `Subscribe`), implemented by both stores.
 - `IContractProvider`: a DI extension point for beans made on demand.
 
 ## [0.1.0] - 2026-11-24

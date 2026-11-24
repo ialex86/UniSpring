@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using UniSpring.Data.Internal;
 using UniSpring.Transactions;
 
 namespace UniSpring.Data
@@ -11,18 +12,23 @@ namespace UniSpring.Data
     /// are read by its flow at once and by everyone else after the outermost commit; a rollback drops them.
     /// Safe to use from any thread.
     /// </summary>
-    public sealed class InMemoryDocumentStore : IDocumentStore, ITransactionManager
+    public sealed class InMemoryDocumentStore : IDocumentStore, ITransactionManager, IDocumentReset
     {
         private sealed class Transaction
         {
             // A null value is a pending delete.
             public readonly Dictionary<(string, string), byte[]> Staged = new Dictionary<(string, string), byte[]>();
             public bool Closed;
+
+            /// <summary>Dropped by a new-game clear: what its flow writes until it ends is lost.</summary>
+            public bool Dropped;
         }
 
         private readonly object m_Gate = new object();
         private readonly Dictionary<(string, string), byte[]> m_Documents = new Dictionary<(string, string), byte[]>();
         private readonly AsyncLocal<Transaction> m_Current = new AsyncLocal<Transaction>();
+        private readonly HashSet<Transaction> m_OpenTransactions = new HashSet<Transaction>();
+        private readonly ClearListeners m_ClearListeners = new ClearListeners();
 
         public DocumentRead Read(string area, string name)
         {
@@ -86,9 +92,66 @@ namespace UniSpring.Data
 
                 var transaction = new Transaction();
                 m_Current.Value = transaction;
+                m_OpenTransactions.Add(transaction);
                 return new Lease(this, transaction, true);
             }
         }
+
+        public bool HasDocuments
+        {
+            get
+            {
+                lock (m_Gate)
+                {
+                    foreach (var key in m_Documents.Keys)
+                    {
+                        if (key.Item1 != MigrationEngine.Area)
+                            return true;
+                    }
+
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>See <see cref="IDocumentReset.DeleteAll"/>; nothing waits for a disk here.</summary>
+        public void DeleteAll()
+        {
+            lock (m_Gate)
+            {
+                if (Open() != null)
+                    throw new InvalidOperationException(
+                        "The saves cannot be cleared inside a transaction: its writes would land after the clear. " +
+                        "Commit it first.");
+            }
+
+            try
+            {
+                lock (m_Gate)
+                {
+                    foreach (var transaction in m_OpenTransactions)
+                    {
+                        transaction.Closed = true;
+                        transaction.Dropped = true;
+                        transaction.Staged.Clear();
+                    }
+
+                    m_OpenTransactions.Clear();
+                    var keys = new List<(string, string)>(m_Documents.Keys);
+                    foreach (var key in keys)
+                    {
+                        if (key.Item1 != MigrationEngine.Area)
+                            m_Documents.Remove(key);
+                    }
+                }
+            }
+            finally
+            {
+                m_ClearListeners.Tell();
+            }
+        }
+
+        public IDisposable Subscribe(Action cleared) => m_ClearListeners.Add(cleared);
 
         private void Change((string, string) key, byte[] bytes)
         {
@@ -100,6 +163,10 @@ namespace UniSpring.Data
                     open.Staged[key] = bytes;
                     return;
                 }
+
+                var current = m_Current.Value;
+                if (current != null && current.Dropped)
+                    return;
 
                 Apply(key, bytes);
             }
@@ -176,6 +243,7 @@ namespace UniSpring.Data
                 {
                     m_Transaction.Closed = true;
                     m_Transaction.Staged.Clear();
+                    m_Store.m_OpenTransactions.Remove(m_Transaction);
                 }
 
                 if (ReferenceEquals(m_Store.m_Current.Value, m_Transaction))

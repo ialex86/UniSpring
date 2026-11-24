@@ -346,6 +346,9 @@ default root is `Application.persistentDataPath/Saves`.
   thread; after it, writes go to disk on the caller's thread before they return,
   so saves made while objects are destroyed are not lost. Changes the disk
   still refuses are logged.
+- **Saving what the disk takes.** Only while closing, a step the disk keeps
+  refusing is left out (and logged) so the steps after it are still saved:
+  losing every save for one refused file is worse than breaking the order once.
 - `WaitForDisk(timeout)` and `IsIdle` tell whether the changes made so far are
   on disk, for tests and tools.
 
@@ -355,6 +358,34 @@ journals in `<root>/.journal`. Areas are segments of letters, digits, `-` and
 
 Transactions of different flows do not merge: when two flows write the same
 document, the later commit wins.
+
+### New game
+
+Both stores implement `IDocumentReset`, which `Install` registers too:
+
+```csharp
+[Service]
+internal sealed class NewGame : INewGame
+{
+    private readonly IDocumentReset m_Saves;
+
+    public NewGame(IDocumentReset saves) { m_Saves = saves; }
+
+    public bool CanContinue => m_Saves.HasDocuments;
+
+    public void Start() => m_Saves.DeleteAll();
+}
+```
+
+- `DeleteAll` deletes every document of every area as one step and waits for
+  the disk. The record of applied migrations stays: documents written from now
+  on already have the current shape.
+- A service that keeps what it read subscribes with `Subscribe(() => ...)` and
+  drops its state when the saves are cleared.
+- Inside an open transaction of the calling flow `DeleteAll` throws and changes
+  nothing. Open transactions of other flows are dropped: they belong to the old
+  game, and what their flows write until they end is lost.
+- A write another thread makes while the clear runs is kept.
 
 ### InMemoryDocumentStore
 

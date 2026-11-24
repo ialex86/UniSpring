@@ -26,11 +26,12 @@ namespace UniSpring.Data
     /// <item>The disk always holds a state the game was in: changes land in the order they were made. When the
     /// disk refuses, the changes stay readable and are tried again; nothing later lands before them.</item>
     /// <item>After <see cref="Close"/> (the game is quitting), writes go to disk on the caller's thread before they
-    /// return.</item>
+    /// return. Only then, when the disk keeps refusing a step, is that step left out and the later ones saved:
+    /// losing every save for one refused file is worse than breaking the order once.</item>
     /// </list>
     /// Safe to use from any thread. Use <see cref="Install"/> to register it in a container.
     /// </summary>
-    public sealed class FileDocumentStore : IDocumentStore, ITransactionManager, IDisposable
+    public sealed class FileDocumentStore : IDocumentStore, ITransactionManager, IDocumentReset, IDisposable
     {
         public static readonly TimeSpan DefaultCloseTimeout = TimeSpan.FromSeconds(5);
 
@@ -39,6 +40,9 @@ namespace UniSpring.Data
             // A null value is a pending delete.
             public readonly Dictionary<(string, string), byte[]> Staged = new Dictionary<(string, string), byte[]>();
             public bool Closed;
+
+            /// <summary>Dropped by a new-game clear: what its flow writes until it ends is lost.</summary>
+            public bool Dropped;
         }
 
         private sealed class Step
@@ -59,8 +63,14 @@ namespace UniSpring.Data
         private readonly List<Step> m_Queue = new List<Step>();
         private readonly Dictionary<(string, string), DocumentChange> m_Waiting = new Dictionary<(string, string), DocumentChange>();
         private readonly AsyncLocal<Transaction> m_Current = new AsyncLocal<Transaction>();
+        private readonly HashSet<Transaction> m_OpenTransactions = new HashSet<Transaction>();
+        private readonly ClearListeners m_ClearListeners = new ClearListeners();
         private readonly Thread m_Thread;
         private long m_LastSequence;
+
+        // A committed step the disk refused to finish: its journal waits on disk, through this sequence.
+        private bool m_Stranded;
+        private long m_StrandedThrough;
         private long m_Landed;
         private bool m_Closed;
         private bool m_QuitHooked;
@@ -101,6 +111,7 @@ namespace UniSpring.Data
                 : root);
             context.RegisterInstance<IDocumentStore>(store);
             context.RegisterInstance<ITransactionManager>(store);
+            context.RegisterInstance<IDocumentReset>(store);
             store.m_QuitHooked = true;
             Application.quitting += store.Dispose;
             return store;
@@ -246,6 +257,97 @@ namespace UniSpring.Data
 
         public void Dispose() => Close(m_Timing.CloseTimeout);
 
+        // ---------------------------------------------------------------- new game
+
+        public bool HasDocuments
+        {
+            get
+            {
+                foreach (var area in AllAreas())
+                {
+                    if (Names(area).Count > 0)
+                        return true;
+                }
+
+                return false;
+            }
+        }
+
+        public void DeleteAll()
+        {
+            lock (m_Gate)
+            {
+                if (Open() != null)
+                    throw new InvalidOperationException(
+                        "The saves cannot be cleared inside a transaction: its writes would land after the clear. " +
+                        "Commit it first.");
+            }
+
+            try
+            {
+                lock (m_Gate)
+                    DropOtherTransactions();
+
+                var deletes = new List<KeyValuePair<(string, string), byte[]>>();
+                foreach (var area in AllAreas())
+                {
+                    foreach (var name in Names(area))
+                        deletes.Add(new KeyValuePair<(string, string), byte[]>((area, name), null));
+                }
+
+                bool closed;
+                lock (m_Gate)
+                {
+                    if (deletes.Count > 0)
+                        Enqueue(deletes);
+                    closed = m_Closed;
+                }
+
+                if (closed)
+                    DrainNow();
+                if (!WaitForDisk(m_Timing.CloseTimeout))
+                    throw new IOException("The disk refused to clear the saves; the deletes wait and are tried again.");
+                GameLog.Info("Saves cleared for a new game: " + deletes.Count + " documents deleted.");
+            }
+            finally
+            {
+                m_ClearListeners.Tell();
+            }
+        }
+
+        public IDisposable Subscribe(Action cleared) => m_ClearListeners.Add(cleared);
+
+        /// <summary>Under the gate: the open transactions of other flows hold the old game and never commit.</summary>
+        private void DropOtherTransactions()
+        {
+            if (m_OpenTransactions.Count == 0)
+                return;
+            foreach (var transaction in m_OpenTransactions)
+            {
+                transaction.Closed = true;
+                transaction.Dropped = true;
+                transaction.Staged.Clear();
+            }
+
+            GameLog.Warn("Saves cleared for a new game while " + m_OpenTransactions.Count + " transaction(s) were open; " +
+                         "what they write belongs to the old game and is dropped.");
+            m_OpenTransactions.Clear();
+        }
+
+        /// <summary>The areas on disk and those only waiting changes know of yet; the migration record is not one.</summary>
+        private IReadOnlyList<string> AllAreas()
+        {
+            var areas = new SortedSet<string>(m_Files.Areas(), StringComparer.Ordinal);
+            lock (m_Gate)
+            {
+                foreach (var key in m_Waiting.Keys)
+                    areas.Add(key.Item1);
+            }
+
+            areas.Remove(MigrationEngine.Area);
+            return new List<string>(areas);
+        }
+
         // ---------------------------------------------------------------- transactions
 
         public ITransaction Begin()
@@ -258,6 +360,7 @@ namespace UniSpring.Data
 
                 var transaction = new Transaction();
                 m_Current.Value = transaction;
+                m_OpenTransactions.Add(transaction);
                 return new Lease(this, transaction, true);
             }
         }
@@ -279,6 +382,10 @@ namespace UniSpring.Data
                     open.Staged[key] = bytes;
                     return;
                 }
+
+                var current = m_Current.Value;
+                if (current != null && current.Dropped)
+                    return;
 
                 Enqueue(new List<KeyValuePair<(string, string), byte[]>> { new KeyValuePair<(string, string), byte[]>(key, bytes) });
                 closed = m_Closed;
@@ -361,7 +468,12 @@ namespace UniSpring.Data
             }
         }
 
-        /// <summary>The store is closed: the caller's thread puts what waits on disk, step by step.</summary>
+        /// <summary>
+        /// The store is closed: the caller's thread puts what waits on disk, step by step. A step the disk refuses
+        /// before it is committed changed nothing: it is left out (logged) and the later ones are still saved. A
+        /// committed step the disk refused to finish is completed when the store opens next; the changes after it
+        /// would land under it then, so they are left out (logged) too.
+        /// </summary>
         private void DrainNow()
         {
             while (true)
@@ -370,26 +482,77 @@ namespace UniSpring.Data
                 {
                     if (m_Queue.Count == 0)
                         return;
+                    if (m_Stranded)
+                    {
+                        DropAllStranded();
+                        return;
+                    }
                 }
 
                 Exception refusal;
                 if (TryLand(1, out refusal))
                     continue;
+                if (refusal is StepCommittedException)
+                    continue; // stranded now: the next round drops the rest
+                DropFirstStep(refusal);
+            }
+        }
 
-                var documents = new List<string>();
-                lock (m_Gate)
+        private void DropFirstStep(Exception refusal)
+        {
+            var documents = new List<string>();
+            lock (m_Gate)
+            {
+                if (m_Queue.Count == 0)
+                    return;
+                Forget(m_Queue[0], documents);
+                m_Queue.RemoveAt(0);
+            }
+
+            GameLog.Error("UniSpring Data: the disk refused documents while the game closes; they are not saved: " +
+                          string.Join(", ", documents), refusal);
+        }
+
+        /// <summary>Under the gate: every waiting step goes; those the stranded journal holds are saved next start.</summary>
+        private void DropAllStranded()
+        {
+            var later = new List<string>();
+            var covered = 0;
+            foreach (var step in m_Queue)
+            {
+                if (step.Sequence <= m_StrandedThrough)
                 {
-                    foreach (var step in m_Queue)
-                    {
-                        foreach (var change in step.Changes)
-                            documents.Add(change.Area + "/" + change.Name);
-                    }
+                    covered += step.Changes.Count;
+                    Forget(step, null);
+                    continue;
                 }
 
-                GameLog.Error("UniSpring Data: the disk refused documents while the game closes; they are not saved: " +
-                              string.Join(", ", documents), refusal);
-                return;
+                Forget(step, later);
             }
+
+            m_Queue.Clear();
+            GameLog.Warn("UniSpring Data: " + covered + " document change(s) the disk refused to finish are completed " +
+                         "the next time the store opens.");
+            if (later.Count > 0)
+                GameLog.Error("UniSpring Data: documents written after a step the disk refused are not saved: " +
+                              string.Join(", ", later));
+        }
+
+        /// <summary>Under the gate: the step no longer waits; its documents read from the disk again.</summary>
+        private void Forget(Step step, List<string> documents)
+        {
+            foreach (var change in step.Changes)
+            {
+                documents?.Add(change.Area + "/" + change.Name);
+                var key = (change.Area, change.Name);
+                DocumentChange waiting;
+                if (m_Waiting.TryGetValue(key, out waiting) && waiting.Version == step.Sequence)
+                    m_Waiting.Remove(key);
+            }
+
+            if (step.Sequence > m_Landed)
+                m_Landed = step.Sequence;
+            Monitor.PulseAll(m_Gate);
         }
 
         /// <summary>
@@ -437,11 +600,21 @@ namespace UniSpring.Data
                 catch (Exception exception)
                 {
                     refusal = exception;
+                    if (exception is StepCommittedException)
+                    {
+                        lock (m_Gate)
+                        {
+                            m_Stranded = true;
+                            m_StrandedThrough = last;
+                        }
+                    }
+
                     return false;
                 }
 
                 lock (m_Gate)
                 {
+                    m_Stranded = false;
                     m_Queue.RemoveRange(0, count);
                     foreach (var change in merged)
                     {
@@ -502,6 +675,7 @@ namespace UniSpring.Data
                 {
                     m_Transaction.Closed = true;
                     m_Transaction.Staged.Clear();
+                    m_Store.m_OpenTransactions.Remove(m_Transaction);
                 }
 
                 if (ReferenceEquals(m_Store.m_Current.Value, m_Transaction))
