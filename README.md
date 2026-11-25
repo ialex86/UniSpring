@@ -579,6 +579,15 @@ all AOT generic instantiations or cover unrelated reflection in user code.
 
 Apache License 2.0. See [LICENSE.md](LICENSE.md).
 
+## Games using this technology
+
+| Game | Relationship to UniSpring |
+| --- | --- |
+| [NoLegal](https://nolegal.netlify.app/) | An open-world garage sim for Windows: assemble and tune cars, calibrate engines on the dyno, race in three cities and work as a taxi. UniSpring was extracted from the DI and logging subsystems of the NoLegal Unity project, so NoLegal is the first game built on this architecture. |
+
+Only projects with a public page are listed here. To add another game, open a
+pull request with a link and a short note about how it uses UniSpring.
+
 ## Provenance
 
 The initial implementation is based on the DI and logging subsystems of the
